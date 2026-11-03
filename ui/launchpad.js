@@ -90,4 +90,4 @@ async function action(name, shell) {
   // Shortcut delivery is not proof a game accepted the requested geometry.
   return { message: name === 'pick' ? 'Click the window to fit; Esc cancels' : 'Window request sent to KWin; check the target window' };
 }
-module.exports = { action, ensureController };
+module.exports = { action, ensureController, scriptPath, dbus };

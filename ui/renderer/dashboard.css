@@ -325,12 +325,46 @@ html, body {
 .card.lp-fit .lp-button::before,
 .card.lp-restore .lp-button::before,
 .card.lp-pick .lp-button::before { background: linear-gradient(100deg, #0003, transparent); }
-.card.launchpad-status {
-  padding: 28px 36px; justify-content: center; gap: 14px;
-  border: 1px solid var(--line); background: var(--card);
+.launchpad-status {
+  padding: 20px 26px; display: flex; flex-direction: column; gap: 9px;
+  border-top: 1px solid #ffffff12; background: #ffffff04;
 }
 .lp-status-label { font: 500 13px var(--mono); letter-spacing: .15em; color: var(--kicker); }
-.lp-status-message { font-size: 22px; line-height: 1.4; color: var(--text); }
+.lp-status-message { font-size: 16px; line-height: 1.45; color: #b9cadc; }
+.card.edge-overview {
+  grid-column: 9 / span 4; grid-row: 1 / span 3;
+  background: radial-gradient(ellipse at 100% 0%, #183047, #0d1722 65%);
+  color: #eef5ff; border-color: #ffffff20;
+}
+.edge-overview-header { display:flex; align-items:center; justify-content:space-between; padding:30px 28px 24px; gap:20px; }
+.edge-overview-heading { display:flex; flex-direction:column; gap:10px; }
+.edge-overview-heading h2 { margin:0; font-size:32px; font-weight:600; letter-spacing:-.025em; }
+.edge-overview-heading p { margin:0; color:#a6b7c9; font-size:16px; }
+.edge-app-count { display:grid; place-items:center; min-width:52px; height:52px; border-radius:18px; background:#82cfff16; color:#b4e7ff; font:500 24px var(--mono); border:1px solid #82cfff25; }
+.edge-app-list { display:flex; flex-direction:column; gap:12px; padding:0 24px 20px; overflow-y:auto; flex:1; min-height:0; scrollbar-width:thin; }
+.edge-app { display:flex; align-items:center; gap:18px; width:100%; min-height:114px; padding:18px; flex:none; text-align:left; border:1px solid #ffffff12; border-radius:16px; color:#eef5ff; background:#ffffff05; font:inherit; cursor:pointer; touch-action:manipulation; }
+.edge-app:hover { border-color:#94dcff70; background:#ffffff0b; }
+.edge-app:active { background:#72cdff25; }
+.edge-app:focus-visible { outline:3px solid #9ce7ff; outline-offset:-3px; }
+.edge-app.is-active { background:linear-gradient(110deg,#1b536563,#1b53651a); border-color:#73d9f380; box-shadow:inset 3px 0 #80e4ff; }
+.edge-app:disabled { opacity:.6; cursor:wait; }
+.edge-app-avatar { display:grid; place-items:center; width:66px; height:66px; border-radius:18px; flex:none; overflow:hidden; background:linear-gradient(140deg,#236c8a,#143647); color:#b8eaff; border:1px solid #ffffff25; }
+.edge-app-avatar svg { width:32px; height:32px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.edge-app-avatar img { width:100%; height:100%; object-fit:cover; object-position:75% center; }
+.app-game { background:#263254; }.app-steam { background:linear-gradient(140deg,#196391,#10273e); }
+.app-terminal { background:linear-gradient(140deg,#226356,#142f2c); }.app-chat { background:linear-gradient(140deg,#6d5599,#302344); }
+.app-browser { background:linear-gradient(140deg,#a04b4b,#432735); }
+.edge-app-copy { display:flex; flex-direction:column; gap:7px; min-width:0; flex:1; }
+.edge-app-copy strong { font-size:22px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.edge-app-copy > span { font-size:15px; color:#adbed0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.edge-app-copy small { font:500 11px var(--mono); letter-spacing:.09em; color:#8fa6bb; }
+.edge-app.is-active small { color:#9ce7ff; }
+.edge-app-empty { flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:18px; text-align:center; padding:28px; border:1px dashed #ffffff18; border-radius:18px; color:#a6b7c9; }
+.edge-app-empty svg { width:58px; height:58px; fill:none; stroke:#79bfde; stroke-width:1; stroke-linecap:round; stroke-linejoin:round; }
+.edge-app-empty strong { color:#d5e6f4; font-size:22px; font-weight:500; }
+.edge-app-empty span { max-width:340px; font-size:16px; line-height:1.6; }
+.edge-overview .lp-status-label { color:#82a5be; font-size:11px; }
+.edge-overview .lp-error .lp-status-label { color:#fa8e8e; }
 .card.lp-error { border-color: #fa8e8e; }
 .lp-error .lp-status-label { color: #fa8e8e; }
 @media (prefers-reduced-motion: reduce) { .lp-button { transition: none; } }

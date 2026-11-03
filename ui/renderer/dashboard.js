@@ -484,6 +484,22 @@ let launchpadMessage = 'Launch a game, then bring it here. Games may need window
 let launchpadBusy = false;
 let launchpadError = false;
 let launchpadArtwork = null;
+let edgeApps = { available:false, windows:[], error:'Connecting to your apps…' };
+let edgeAppsLoading = false;
+async function refreshEdgeApps() {
+  if (edgeAppsLoading) return;
+  edgeAppsLoading = true;
+  try {
+    const next = await api.edgeWindows();
+    if (JSON.stringify(next) !== JSON.stringify(edgeApps)) {
+      edgeApps = next;
+      if (layout.page === 'launchpad' && !launchpadBusy) render();
+    }
+  } catch { edgeApps = {available:false, windows:[], error:'App overview is unavailable'}; }
+  finally { edgeAppsLoading = false; }
+}
+setInterval(refreshEdgeApps, 1500);
+refreshEdgeApps();
 api.launchpadAction('artwork').then(({ image }) => {
   launchpadArtwork = image;
   if (layout.page === 'launchpad') render();
@@ -506,6 +522,71 @@ function launchpadIcon(action) {
   path.setAttribute('d', LAUNCHPAD_ICONS[action]);
   svg.append(path);
   return svg;
+}
+function edgeAppIdentity(app) {
+  const key = app.app.toLowerCase();
+  if (key === 'steam_app_3471800') return {name:'Vanguard Galaxy', icon:'vanguard', theme:'game'};
+  if (/steam/.test(key)) return {name:'Steam', icon:'steam', theme:'steam'};
+  if (/vivaldi|firefox|chrom|browser/.test(key)) return {name:'Browser', icon:'pick', theme:'browser'};
+  if (/konsole|terminal|kitty|alacritty/.test(key)) return {name:'Terminal', icon:'fit', theme:'terminal'};
+  if (/discord|vesktop|telegram|signal/.test(key)) return {name:'Chat', icon:'pick', theme:'chat'};
+  return {name:app.app.replace(/^org\\.kde\\./, '') || 'Application', icon:'fit', theme:'app'};
+}
+function edgeOverview(status) {
+  const c = card('edge-overview', 4, 3);
+  const header = document.createElement('div');
+  header.className = 'edge-overview-header';
+  const title = document.createElement('div');
+  title.className = 'edge-overview-heading';
+  const kicker = document.createElement('span');
+  kicker.className = 'lp-eyebrow'; kicker.textContent = 'YOUR EDGE';
+  const heading = document.createElement('h2'); heading.textContent = 'On this screen';
+  const subtitle = document.createElement('p'); subtitle.textContent = 'Your apps, one tap away';
+  title.append(kicker, heading, subtitle);
+  const count = document.createElement('span');
+  count.className = 'edge-app-count'; count.textContent = String(edgeApps.windows.length);
+  header.append(title, count);
+  const list = document.createElement('div'); list.className = 'edge-app-list';
+  if (!edgeApps.windows.length) {
+    const empty = document.createElement('div'); empty.className = 'edge-app-empty';
+    empty.append(launchpadIcon('fit'));
+    const text = document.createElement('strong');
+    text.textContent = edgeApps.available ? 'A little space for your apps' : 'Waiting for your Edge';
+    const detail = document.createElement('span');
+    detail.textContent = edgeApps.error || (edgeApps.available
+      ? 'Launch a game or bring an app here. It will appear in this box.' : 'Connect the Edge to see its running apps.');
+    empty.append(text, detail); list.append(empty);
+  }
+  for (const app of edgeApps.windows) {
+    const identity = edgeAppIdentity(app);
+    const button = document.createElement('button');
+    button.className = `edge-app ${app.active ? 'is-active' : ''}`;
+    button.dataset.windowId = app.id;
+    button.title = app.title;
+    button.setAttribute('aria-label', `Show ${identity.name}: ${app.title}`);
+    button.setAttribute('aria-pressed', String(app.active));
+    button.disabled = launchpadBusy;
+    const avatar = document.createElement('span'); avatar.className = `edge-app-avatar app-${identity.theme}`;
+    if (identity.theme === 'game' && launchpadArtwork) {
+      const image = document.createElement('img'); image.src = launchpadArtwork; image.alt = ''; avatar.append(image);
+    } else avatar.append(launchpadIcon(identity.icon));
+    const copy = document.createElement('span'); copy.className = 'edge-app-copy';
+    const name = document.createElement('strong'); name.textContent = identity.name;
+    const caption = document.createElement('span'); caption.textContent = app.title;
+    const badge = document.createElement('small');
+    badge.textContent = app.active ? 'ACTIVE NOW' : app.minimized ? 'MINIMIZED · TAP TO OPEN' : 'RUNNING · TAP TO OPEN';
+    copy.append(name, caption, badge); button.append(avatar, copy);
+    button.onclick = async () => {
+      if (launchpadBusy) return;
+      launchpadBusy = true;
+      try { launchpadMessage = (await api.activateEdgeWindow(app.id)).message; launchpadError = false; }
+      catch (error) { launchpadMessage = error.message; launchpadError = true; }
+      finally { launchpadBusy = false; await refreshEdgeApps(); render(); }
+    };
+    list.append(button);
+  }
+  c.append(header, list, status);
+  return c;
 }
 function launchpadTiles() {
   const actions = [
@@ -555,7 +636,8 @@ function launchpadTiles() {
     c.append(button);
     return c;
   });
-  const status = card(`launchpad-status${launchpadError ? ' lp-error' : ''}`, 12, 1);
+  const status = document.createElement('div');
+  status.className = `launchpad-status${launchpadError ? ' lp-error' : ''}`;
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
   const label = document.createElement('span');
@@ -565,14 +647,18 @@ function launchpadTiles() {
   message.className = 'lp-status-message';
   message.textContent = launchpadMessage;
   status.append(label, message);
-  tiles.push(status);
+  tiles.unshift(edgeOverview(status));
   return tiles;
 }
 
 function render() {
   if (layout.page === 'launchpad') {
     const focusedAction = document.activeElement?.dataset?.action;
+    const focusedWindow = document.activeElement?.dataset?.windowId;
     board.replaceChildren(...launchpadTiles());
+    if (focusedWindow && !launchpadBusy) {
+      [...board.querySelectorAll('[data-window-id]')].find(b => b.dataset.windowId === focusedWindow)?.focus({preventScroll:true});
+    }
     if (focusedAction && !launchpadBusy) {
       board.querySelector(`[data-action="${focusedAction}"]`)?.focus({ preventScroll: true });
     }

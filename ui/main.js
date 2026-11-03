@@ -21,6 +21,15 @@ if (process.env.XDG_SESSION_TYPE === 'wayland') {
 }
 
 const launchpad = require('./launchpad');
+const windowOverview = require('./window-overview');
+ipcMain.handle('edge-windows', () => windowOverview.snapshot());
+ipcMain.handle('edge-window-activate', async (_event, id) => {
+  const result = await windowOverview.activate(id);
+  for (const w of [mainWindow, dashWindow]) {
+    if (w && !w.isDestroyed()) w.setAlwaysOnTop(false);
+  }
+  return result;
+});
 ipcMain.handle('launchpad-action', async (_event, action) => {
   const result = await launchpad.action(action, shell);
   if (dashWindow && !dashWindow.isDestroyed()) {
@@ -915,6 +924,7 @@ if (!app.requestSingleInstanceLock()) {
     if (process.env.XDG_SESSION_TYPE === 'wayland') {
       await launchpad.ensureController().catch((error) => console.error('[launchpad]', error.message));
     }
+    windowOverview.start().catch((error) => console.error('[window-overview]', error.message));
     createMainWindow();
     // Opening the panel window normally takes a click on the Dashboard page.
     // A plain flag lets shot.sh, and anyone checking the panel layout, bring
@@ -928,7 +938,7 @@ if (!app.requestSingleInstanceLock()) {
 
   // Not app.quit(): with a tray the app deliberately outlives its windows.
   app.on('window-all-closed', () => { if (!tray) app.quit(); });
-  app.on('before-quit', () => { quitting = true; });
+  app.on('before-quit', () => { quitting = true; windowOverview.stop(); });
   app.on('before-quit', () => {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     if (sock) sock.destroy();
