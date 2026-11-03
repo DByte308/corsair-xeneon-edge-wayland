@@ -480,43 +480,102 @@ function fit() {
   board.style.setProperty('--sy', String(sy > 0 ? sy : 1));
 }
 
-let launchpadMessage = 'Launch a game, then fit it separately. Some games require windowed mode.';
+let launchpadMessage = 'Launch a game, then bring it here. Games may need windowed mode.';
 let launchpadBusy = false;
+let launchpadError = false;
+let launchpadArtwork = null;
+api.launchpadAction('artwork').then(({ image }) => {
+  launchpadArtwork = image;
+  if (layout.page === 'launchpad') render();
+}).catch(() => {});
+
+const LAUNCHPAD_ICONS = {
+  vanguard: 'M9 5l11 7-11 7z',
+  'fit-vanguard': 'M3 4h18v12H3z M8 20h8 M12 16v4 M8 10h8 M13 7l3 3-3 3',
+  steam: 'M5 5h14v14H5z M9 5v14 M9 10h10 M9 14h10',
+  fit: 'M3 4h18v12H3z M8 20h8 M12 16v4 M7 10h10 M14 7l3 3-3 3',
+  restore: 'M9 5L3 11l6 6 M3 11h11a6 6 0 016 6',
+  pick: 'M3 8V3h5 M16 3h5v5 M21 16v5h-5 M8 21H3v-5 M9 9l9 4-4 1-1 4z',
+};
+function launchpadIcon(action) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(ns, 'path');
+  path.setAttribute('d', LAUNCHPAD_ICONS[action]);
+  svg.append(path);
+  return svg;
+}
 function launchpadTiles() {
   const actions = [
-    ['vanguard', 'Vanguard Galaxy', 'Launch through Steam'],
-    ['fit-vanguard', 'Move Vanguard to Edge', 'Target Vanguard Galaxy directly'],
-    ['steam', 'Steam library', 'Browse your games'],
-    ['fit', 'Move app to Edge', 'Fit the last active app to the Edge'],
-    ['restore', 'Move app back', 'Restore its saved position and size'],
-    ['pick', 'Choose a window', 'Click any window to fit it'],
+    ['vanguard', 'Launch Vanguard Galaxy', 'Start your next voyage', 'STEAM GAME'],
+    ['fit-vanguard', 'Play on Edge', 'Bring Vanguard Galaxy to this screen', 'VANGUARD GALAXY'],
+    ['steam', 'Browse games', 'Open your Steam library', 'YOUR LIBRARY'],
+    ['fit', 'Bring app here', 'Fit your last active app to the Edge', 'MOVE TO EDGE'],
+    ['restore', 'Move app back', 'Restore its previous screen and size', 'RESTORE WINDOW'],
+    ['pick', 'Choose an app', 'Select a window, then bring it here', 'WINDOW PICKER'],
   ];
-  const tiles = actions.map(([action, title, detail]) => {
-    const c = card('launchpad', 4, 1);
+  const tiles = actions.map(([action, title, detail, eyebrow]) => {
+    const c = card(`launchpad lp-${action}`, 4, 1);
     const button = document.createElement('button');
-    button.style.cssText = 'width:100%;height:100%;text-align:left;padding:24px;background:transparent;color:inherit;border:0;font:inherit;cursor:pointer;white-space:normal';
-    button.textContent = `${title} — ${detail}`;
+    button.className = 'lp-button';
+    button.dataset.action = action;
+    button.setAttribute('aria-label', `${title}. ${detail}`);
+    if (launchpadArtwork && ['vanguard', 'fit-vanguard'].includes(action)) {
+      const image = document.createElement('img');
+      image.className = 'lp-artwork';
+      image.src = launchpadArtwork;
+      image.alt = '';
+      button.append(image);
+    }
+    const symbol = document.createElement('span');
+    symbol.className = 'lp-icon';
+    symbol.append(launchpadIcon(action));
+    const copy = document.createElement('span');
+    copy.className = 'lp-copy';
+    for (const [className, text] of [['lp-eyebrow', eyebrow], ['lp-title', title], ['lp-detail', detail]]) {
+      const line = document.createElement('span');
+      line.className = className;
+      line.textContent = text;
+      copy.append(line);
+    }
+    button.append(symbol, copy);
     button.disabled = launchpadBusy;
     button.onclick = async () => {
       if (launchpadBusy) return;
       launchpadBusy = true;
+      launchpadError = false;
+      launchpadMessage = `${title}…`;
+      render();
       try { launchpadMessage = (await api.launchpadAction(action)).message; }
-      catch (error) { launchpadMessage = error.message; }
+      catch (error) { launchpadMessage = error.message; launchpadError = true; }
       finally { launchpadBusy = false; render(); }
     };
     c.append(button);
     return c;
   });
-  const status = card('launchpad-status', 4, 1);
-  status.style.padding = '24px';
-  status.textContent = launchpadMessage;
+  const status = card(`launchpad-status${launchpadError ? ' lp-error' : ''}`, 12, 1);
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  const label = document.createElement('span');
+  label.className = 'lp-status-label';
+  label.textContent = launchpadBusy ? 'WORKING' : launchpadError ? 'ACTION FAILED' : 'EDGE LAUNCHPAD';
+  const message = document.createElement('span');
+  message.className = 'lp-status-message';
+  message.textContent = launchpadMessage;
+  status.append(label, message);
   tiles.push(status);
   return tiles;
 }
 
 function render() {
   if (layout.page === 'launchpad') {
+    const focusedAction = document.activeElement?.dataset?.action;
     board.replaceChildren(...launchpadTiles());
+    if (focusedAction && !launchpadBusy) {
+      board.querySelector(`[data-action="${focusedAction}"]`)?.focus({ preventScroll: true });
+    }
     return;
   }
   const tiles = [];
@@ -531,7 +590,7 @@ api.onEvent((msg) => {
   if (msg.event === 'sensors') {
     sensors = msg.data;
     sample();
-    render();
+    if (layout.page !== 'launchpad') render();
   } else if (msg.event === 'dashboard') {
     layout = { ...layout, ...msg.data };
     if (msg.data && msg.data.userTheme) setUserTheme(msg.data.userTheme);
@@ -561,6 +620,6 @@ async function start() {
 window.addEventListener('resize', () => { fit(); render(); });
 
 // The clock has to tick even when nothing else changes.
-setInterval(render, 1000);
+setInterval(() => { if (layout.page !== 'launchpad') render(); }, 1000);
 fit();
 start();

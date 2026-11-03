@@ -33,7 +33,25 @@ async function ensureController() {
   if (!match) throw new Error('KWin refused the launchpad controller');
   await dbus('org.kde.KWin', `/Scripting/Script${match[1]}`, 'org.kde.kwin.Script', 'run');
 }
+function localGameArtwork() {
+  const roots = [path.join(os.homedir(), '.local/share/Steam'), path.join(os.homedir(), '.steam/steam')];
+  for (const root of roots) {
+    const cache = path.join(root, 'appcache/librarycache/3471800');
+    try {
+      for (const entry of fs.readdirSync(cache, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const image = path.join(cache, entry.name, 'library_hero.jpg');
+        try {
+          if (fs.statSync(image).size > 4 * 1024 * 1024) continue;
+          return `data:image/jpeg;base64,${fs.readFileSync(image).toString('base64')}`;
+        } catch { /* another cache entry may contain the hero */ }
+      }
+    } catch { /* no local Steam artwork; gradient fallback remains */ }
+  }
+  return null;
+}
 async function action(name, shell) {
+  if (name === 'artwork') return { image: localGameArtwork() };
   if (name === 'vanguard') {
     await shell.openExternal('steam://rungameid/3471800');
     return { message: 'Launch request sent to Steam' };

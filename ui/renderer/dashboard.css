@@ -128,7 +128,7 @@ html, body {
    drops to a single column and auto-placement scatters the rest of the page,
    which is exactly what the Media page's six-column now playing tile did. */
 .c2 { grid-column: span 2 } .c3 { grid-column: span 3 } .c4 { grid-column: span 4 }
-.c5 { grid-column: span 5 } .c6 { grid-column: span 6 }
+.c5 { grid-column: span 5 } .c6 { grid-column: span 6 } .c12 { grid-column: span 12 }
 .r2 { grid-row: span 2 }    .r3 { grid-row: span 3 }
 
 .kicker {
@@ -275,3 +275,62 @@ html, body {
   color: var(--kicker); background: var(--bg);
 }
 #offline.show { display: flex; }
+
+/* Launchpad: self-contained contrast palette, independent of dashboard theme. */
+.card.launchpad {
+  padding: 0; overflow: hidden; border: 1px solid #ffffff20;
+  background: #102a3c; color: #fff; position: relative;
+  box-shadow: 0 8px 24px #0003;
+}
+.lp-button {
+  position: relative; isolation: isolate; display: flex; align-items: center;
+  gap: 24px; width: 100%; height: 100%; padding: 28px 32px;
+  text-align: left; border: 0; color: #fff; font: inherit;
+  background: transparent; cursor: pointer; touch-action: manipulation;
+  transition: background .14s ease, box-shadow .14s ease;
+}
+.lp-button::before {
+  content: ''; position: absolute; inset: 0; z-index: -1;
+  background: linear-gradient(100deg, #050b17ed 8%, #071525b8 62%, #07152566);
+}
+.lp-button:hover { background: #ffffff12; box-shadow: inset 0 0 0 2px #ffffff65; }
+.lp-button:active { background: #ffffff25; box-shadow: inset 0 0 0 4px #7dd3fc; }
+.lp-button:focus-visible { outline: 4px solid #9ce7ff; outline-offset: -5px; }
+.lp-button:disabled { cursor: wait; opacity: .65; }
+.lp-artwork {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; object-position: center 38%; z-index: -2;
+}
+.lp-icon {
+  display: grid; place-items: center; flex: 0 0 72px; height: 72px;
+  border-radius: 22px; border: 1px solid #ffffff38;
+  background: #ffffff12; color: #a5e7ff;
+}
+.lp-icon svg { width: 36px; height: 36px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.lp-vanguard .lp-icon svg { fill: currentColor; stroke-width: 1; }
+.lp-copy { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.lp-eyebrow { font: 500 12px var(--mono); letter-spacing: .16em; color: #a5d5ef; }
+.lp-title { font-size: 29px; line-height: 1.15; font-weight: 600; letter-spacing: -.025em; }
+.lp-detail { font-size: 16px; line-height: 1.4; color: #e0eaf2; }
+.card.lp-vanguard { background: radial-gradient(ellipse at 90% 0%, #66499f, #112946); }
+.card.lp-fit-vanguard { background: radial-gradient(ellipse at 100% 10%, #126f86, #0d253e); }
+.lp-fit-vanguard .lp-artwork { object-position: 80% 65%; }
+.card.lp-steam { background: linear-gradient(120deg, #0b233d, #17679b); }
+.card.lp-fit { background: linear-gradient(120deg, #133844, #138c94); }
+.card.lp-restore { background: linear-gradient(120deg, #292243, #7356a6); }
+.lp-restore .lp-icon { color: #dec2ff; }
+.card.lp-pick { background: linear-gradient(120deg, #402e22, #a26a36); }
+.lp-pick .lp-icon { color: #ffda9b; }
+.card.lp-steam .lp-button::before,
+.card.lp-fit .lp-button::before,
+.card.lp-restore .lp-button::before,
+.card.lp-pick .lp-button::before { background: linear-gradient(100deg, #0003, transparent); }
+.card.launchpad-status {
+  padding: 28px 36px; justify-content: center; gap: 14px;
+  border: 1px solid var(--line); background: var(--card);
+}
+.lp-status-label { font: 500 13px var(--mono); letter-spacing: .15em; color: var(--kicker); }
+.lp-status-message { font-size: 22px; line-height: 1.4; color: var(--text); }
+.card.lp-error { border-color: #fa8e8e; }
+.lp-error .lp-status-label { color: #fa8e8e; }
+@media (prefers-reduced-motion: reduce) { .lp-button { transition: none; } }
