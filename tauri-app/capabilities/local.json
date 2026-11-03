@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local-web-ui",
+  "description": "Only the local EdgeLine UI can call the Rust host; external Tablet Deck frames have no capability.",
+  "local": true,
+  "windows": ["main", "dashboard", "taskbar"],
+  "permissions": ["core:default", "allow-edgeline"]
+}

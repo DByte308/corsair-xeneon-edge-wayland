@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "EdgeLine Rust",
+  "version": "0.7.0",
+  "identifier": "dev.edgeline.rust",
+  "build": { "frontendDist": "web-dist" },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": false, "icon": ["../ui/assets/icons/128x128.png"] }
+}

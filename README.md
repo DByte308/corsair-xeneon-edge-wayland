@@ -1,8 +1,9 @@
 # EdgeLine
 
-> **Rust migration branch:** the existing web UI is preserved. A native Rust
-> control backend is implemented as an opt-in path; the Electron host and C++
-> hardware agent have not yet been migrated. See [migration status and tests](docs/RUST-MIGRATION.md).
+> **Rust migration branch:** the existing web UI is preserved. A Rust control
+> backend and native Tauri host now build and pass integration/smoke tests. The
+> C++ hardware agent is still a compatibility dependency, gestures remain pending,
+> and the working Electron build is retained for rollback. See [migration status and tests](docs/RUST-MIGRATION.md).
 
 Native Linux control for the **Corsair Xeneon Edge**, the 14.5 inch 2560x720
 touchscreen strip that ships with no Linux software at all. Corsair's iCUE is

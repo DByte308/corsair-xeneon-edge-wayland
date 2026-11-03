@@ -97,7 +97,7 @@ impl Backend {
         match request.method.as_str() {
             "backend.info" => Ok(
                 json!({"name":"edgeline-backend","version":env!("CARGO_PKG_VERSION"),
-                "language":"Rust","stage":"control-core migration", "uiHost":"Electron (Tauri pending)",
+                "language":"Rust","stage":"control-core migration", "uiHost":"client-selected; native Tauri preview available",
                 "hardware":"legacy C++ agent (not migrated)","gestures":"disabled; Rust port pending",
                 "capabilities":["kwin-window-feed","edge-window-activation","window-fitting","native-window-picker","steam-launch","local-artwork"]}),
             ),

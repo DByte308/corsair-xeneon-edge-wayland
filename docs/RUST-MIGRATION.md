@@ -24,10 +24,41 @@ socket and scripts are inside a private 0700 runtime directory, with the socket
 and scripts mode 0600. IPC peers must match the effective user ID. Window UUIDs
 are validated; text is bounded; arbitrary shell commands are not an RPC method.
 
+## Native Tauri host implemented
+
+`tauri-app/` is a separate Rust/WebKitGTK host. It does not launch Electron or a
+Python window bridge. The same UI files are staged unchanged in appearance; only
+the staged HTML CSP is adapted for Tauri's local IPC. The compatibility adapter
+preserves all 26 frontend methods and existing event payloads. External frames do
+not receive the adapter; explicit Tauri permissions allow only the local main,
+dashboard and taskbar windows to invoke the host.
+
+Implemented in Rust: window/tray management, separate taskbar/dashboard/control
+windows, preference persistence, autostart handling, backend socket transport,
+agent event forwarding, and the local no-key Tablet Deck child-process lifecycle.
+The hardware agent remains C++ for now. Tablet Deck itself remains its separate
+Node application, deliberately in dry-run mode.
+
+A hidden Wayland smoke test loaded all six original page modules, constructed the
+Picture page, detected the real Edge, and read a real `state.all` response from
+the existing hardware agent. It reported zero JavaScript/CSP errors. This is a
+**DOM/API test, not a visual rendering or touch/presentation acceptance test**.
+The currently running Electron application was not stopped or replaced.
+
+The native host currently requires an unscaled, unambiguous 2560×720 Edge, to
+match the compositor scripts' coordinate contract. It implements hiding its own
+windows on disconnect and restoring previously visible windows on reconnect;
+physical hotplug acceptance testing is still pending.
+
+The native host reads legacy panel preferences as a fallback, but writes its own
+`edgeline-rust` configuration only on explicit settings changes. Smoke mode blocks
+host mutations, hardware writes, child-server startup and preference changes.
+
 ## Still pending
 
 - C++/Qt hardware agent: HID, DDC, sensors, profiles and its existing RPC calls.
-- Electron window/tray host: replace with Tauri/Rust after API parity testing.
+- Native Tauri host visible-window, tray and physical hotplug parity checks.
+  The host now compiles and passes hidden DOM/API tests; it is not yet the deployed app.
 - Settings, packaging and startup ownership consolidation.
 - Gestures: the unfinished Python prototype is not enabled or bundled. The
   eventual recognizer, touch proxy and portal handling need a Rust implementation.
@@ -58,7 +89,30 @@ No fake window state or hardware readings are substituted.
 Read-only feed startup is separate from controller startup: merely inspecting
 window state does not install the window-placement controller or move anything.
 
-## Opt-in UI trial / rollback
+## Build / check the Tauri host
+
+```sh
+npm --prefix ui ci
+cargo build --locked --release --manifest-path rust-backend/Cargo.toml
+cargo build --locked --release --manifest-path tauri-app/Cargo.toml
+cargo test --locked --manifest-path tauri-app/Cargo.toml
+cargo clippy --locked --manifest-path tauri-app/Cargo.toml --all-targets -- -D warnings
+node tauri-app/test-bridge.js
+# Requires the existing hardware agent; hidden, mutation-blocked test:
+GDK_BACKEND=wayland tauri-app/target/release/edgeline-desktop --smoke-test
+```
+
+WebKitGTK 4.1, GTK3 and the other Tauri Linux development libraries are required.
+`ui/node_modules/@fortawesome/fontawesome-free` supplies the already-used UI
+icons during staging. Generated web-dist, permissions and build artifacts are
+not source files. No system package installation is needed on the development
+machine. Native distribution packaging remains pending (`bundle.active=false`).
+
+For an intentional visible trial, quit the old UI first, then run the native
+binary without `--smoke-test`. It will use the Rust control core and the C++
+compatibility agent. Do not retire the old host until visual/touch parity passes.
+
+## Opt-in legacy UI trial / rollback
 
 The legacy UI can use the new services without changing any renderer files:
 
