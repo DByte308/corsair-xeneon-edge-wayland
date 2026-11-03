@@ -43,4 +43,13 @@ shortcuts.EdgeLineFit();
 checkOriginal();
 removed(target);
 shortcuts.EdgeLineRestore();
-console.log('kwin-launchpad: fit, repeated fit, restore, picker, missing/ambiguous output and closed target pass');
+// Existing control windows are also routed to the Edge on controller startup.
+workspace.screens = [screen];
+target.caption = 'EdgeLine';
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../kwin-launchpad.js'), 'utf8'), {
+  workspace, KWin: { MaximizeArea: 1 }, print() {}, registerShortcut() {}, callDBus() {},
+});
+assert.equal(target.frameGeometry.x, screen.geometry.x);
+assert.equal(target.frameGeometry.width, 2560);
+assert.equal(target.frameGeometry.height, 720);
+console.log('kwin-launchpad: fit, restore, picker, output guards and Edge-only control placement pass');

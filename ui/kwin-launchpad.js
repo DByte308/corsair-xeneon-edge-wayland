@@ -43,13 +43,19 @@
         print('EdgeLine: fitted ' + w.caption);
     }
     function placePanel(w) {
-        if (!w || String(w.caption) !== 'EdgeLine dashboard') return;
+        if (!w || !['EdgeLine', 'EdgeLine dashboard'].includes(String(w.caption))) return;
         var outputs = workspace.screens.filter(function (s) {
             return s.geometry.width === 2560 && s.geometry.height === 720;
         });
         if (outputs.length !== 1) return;
         var g = outputs[0].geometry;
         w.frameGeometry = {x:g.x,y:g.y,width:g.width,height:g.height};
+        if (String(w.caption) === 'EdgeLine') {
+            workspace.windowList().forEach(function (panel) {
+                if (String(panel.caption) === 'EdgeLine dashboard') panel.keepAbove = false;
+            });
+            w.keepAbove = true;
+        }
     }
     workspace.windowAdded.connect(placePanel);
     workspace.windowList().forEach(placePanel);

@@ -314,11 +314,13 @@ function edgeDisplay() {
 
 function createMainWindow() {
   // shot.sh can ask for a taller window so a whole page fits in one capture.
-  const devH = parseInt(devSwitch('height') || '', 10);
+  const edge = edgeDisplay();
   mainWindow = new BrowserWindow({
+    title: 'EdgeLine',
     icon: APP_ICON,
-    width: 1200,
-    height: Number.isFinite(devH) && devH > 0 ? devH : 760,
+    ...(edge ? { x: edge.bounds.x, y: edge.bounds.y } : {}),
+    width: edge ? edge.bounds.width : 1200,
+    height: edge ? edge.bounds.height : 720,
     minWidth: 940,
     minHeight: 620,
     frame: false,               // the design draws its own titlebar
@@ -346,14 +348,14 @@ function createMainWindow() {
   // Wayland may not deliver a first frame for an unmapped surface. Do not
   // make mapping the surface depend on a hidden-window paint notification.
   if (process.env.XDG_SESSION_TYPE === 'wayland' && !startHidden) {
-    mainWindow.show();
+    showMainWindow();
   }
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
     .catch((error) => console.error('[main-window] load:', error.message));
   mainWindow.once('ready-to-show', () => {
     // Started by the login entry: come up in the tray rather than throwing a
     // window at someone who just logged in.
-    if (!startHidden) mainWindow.show();
+    if (!startHidden) showMainWindow();
     refreshTray();
   });
   mainWindow.on('show', refreshTray);
@@ -576,9 +578,16 @@ function trayIconPath() {
 
 function showMainWindow() {
   if (!mainWindow) { createMainWindow(); return; }
+  const edge = edgeDisplay();
+  if (!edge) { mainWindow.hide(); return; }
   if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.setBounds(edge.bounds);
+  if (dashWindow && !dashWindow.isDestroyed()) dashWindow.setAlwaysOnTop(false);
   mainWindow.show();
   mainWindow.focus();
+  if (process.env.XDG_SESSION_TYPE === 'wayland') {
+    launchpad.action('panel', shell).catch((error) => console.error('[edge-windows]', error.message));
+  }
 }
 
 function buildTrayMenu() {
@@ -877,7 +886,7 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     connect();
     // Nothing is listening on a fresh machine, so bring the agent up rather
     // than showing a window that can do nothing.
@@ -890,6 +899,13 @@ if (!app.requestSingleInstanceLock()) {
     const onDisplaysChanged = () => {
       const present = !!edgeDisplay();
       notify('displays-changed', { edgePresent: present });
+      if (!present) {
+        for (const w of [mainWindow, dashWindow, calWindow, rippleWindow]) {
+          if (w && !w.isDestroyed()) w.hide();
+        }
+      } else if (process.env.XDG_SESSION_TYPE === 'wayland') {
+        launchpad.action('panel', shell).catch((error) => console.error('[edge-windows]', error.message));
+      }
       refreshTray();
     };
     screen.on('display-added', onDisplaysChanged);
@@ -897,7 +913,7 @@ if (!app.requestSingleInstanceLock()) {
     screen.on('display-metrics-changed', onDisplaysChanged);
     createTray();
     if (process.env.XDG_SESSION_TYPE === 'wayland') {
-      launchpad.ensureController().catch((error) => console.error('[launchpad]', error.message));
+      await launchpad.ensureController().catch((error) => console.error('[launchpad]', error.message));
     }
     createMainWindow();
     // Opening the panel window normally takes a click on the Dashboard page.

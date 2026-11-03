@@ -6,11 +6,14 @@
     });
     if (outputs.length !== 1) return;
     var g = outputs[0].geometry;
-    workspace.windowList().forEach(function (w) {
-        if (String(w.caption) !== 'EdgeLine dashboard') return;
+    var windows = workspace.windowList();
+    var controlVisible = windows.some(function (w) { return String(w.caption) === 'EdgeLine' && !w.minimized; });
+    windows.forEach(function (w) {
+        var title = String(w.caption);
+        if (title !== 'EdgeLine dashboard' && title !== 'EdgeLine') return;
         w.fullScreen = false;
         w.setMaximize(false, false);
         w.frameGeometry = {x:g.x,y:g.y,width:g.width,height:g.height};
-        w.keepAbove = true;
+        w.keepAbove = title === 'EdgeLine' || !controlVisible;
     });
 })();
