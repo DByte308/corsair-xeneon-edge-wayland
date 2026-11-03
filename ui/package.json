@@ -10,13 +10,13 @@
     "start": "electron . --class=edgeline",
     "dist:dir": "electron-builder --linux dir --publish never",
     "dist:appimage": "electron-builder --linux AppImage --publish never",
-    "test": "node test/edge-display.test.js && node test/distro.test.js"
+    "test": "node test/edge-display.test.js && node test/distro.test.js && node test/kwin-launchpad.test.js"
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^6.5.2"
   },
   "devDependencies": {
-    "electron": "^33.0.0",
+    "electron": "^45.2.1",
     "electron-builder": "^24.13.3"
   },
   "build": {
@@ -28,6 +28,8 @@
     },
     "files": [
       "main.js",
+      "launchpad.js",
+      "kwin-launchpad.js",
       "preload.js",
       "edge-display.js",
       "distro.js",

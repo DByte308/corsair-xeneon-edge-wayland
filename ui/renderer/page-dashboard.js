@@ -83,6 +83,7 @@ if (typeof api !== 'undefined' && typeof api.onDashboardStatus === 'function') {
 // layouts in dashboard.js, so the preview below is the panel rather than an
 // impression of it.
 const DASH_PAGES = [
+  { id: 'launchpad', label: 'Launchpad', tiles: [] },
   { id: 'system', label: 'System',
     tiles: [['Clock', 3, 2], ['CPU', 3, 1], ['GPU', 3, 1], ['Notifications', 3, 3],
             ['Memory', 2, 1], ['Disk I/O', 2, 1], ['Network', 2, 1],
@@ -501,6 +502,21 @@ PAGES.dashboard = (host) => {
           icon('fa-solid fa-triangle-exclamation'), el('span', {}, dashUi.error))
       : null,
 
+    dashUi.page === 'launchpad'
+      ? el('div', { class: 'card', style: 'padding:20px;margin-bottom:16px;display:flex;gap:12px;flex-wrap:wrap' },
+          ...[['vanguard', 'Launch Vanguard Galaxy'], ['steam', 'Steam library'],
+              ['fit', 'Move app to Edge'], ['restore', 'Move app back'], ['pick', 'Choose window']]
+            .map(([action, label]) => el('button', {
+              class: 'btn',
+              onclick: async () => {
+                try { await api.launchpadAction(action); dashUi.error = ''; }
+                catch (error) { dashUi.error = error.message; }
+                render();
+              },
+            }, label)),
+          el('div', { style: 'width:100%;font-size:13px' },
+            'Uses the last active app. Restore is available here when a game covers the panel. Placement is saved until EdgeLine’s KWin script or Plasma restarts.'))
+      : null,
     stripPreview(),
     el('div', { style: 'height:16px' }),
     el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start' },

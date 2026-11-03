@@ -20,6 +20,17 @@ if (process.env.XDG_SESSION_TYPE === 'wayland') {
   app.commandLine.appendSwitch('ozone-platform', 'wayland');
 }
 
+const launchpad = require('./launchpad');
+ipcMain.handle('launchpad-action', async (_event, action) => {
+  const result = await launchpad.action(action, shell);
+  if (dashWindow && !dashWindow.isDestroyed()) {
+    // Let ordinary apps cover the dashboard after fitting them to the Edge.
+    if (action === 'fit' || action === 'pick') dashWindow.setAlwaysOnTop(false);
+    if (action === 'restore') dashWindow.setAlwaysOnTop(true, 'screen-saver');
+  }
+  return result;
+});
+
 const AGENT_NAME = 'edgeline-agent';
 const APP_ICON = path.join(__dirname, 'assets', 'icons', '256x256.png');
 const SOCKET = path.join(
@@ -325,8 +336,20 @@ function createMainWindow() {
   mainWindow.webContents.on('console-message', (_e, level, message, line, source) => {
     if (level >= 2) console.error(`[renderer] ${source}:${line} ${message}`);
   });
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow.webContents.on('did-fail-load', (_event, code, description) => {
+    console.error(`[main-window] load failed ${code}: ${description}`);
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[main-window] renderer exited:', details.reason);
+  });
   const startHidden = process.argv.includes('--hidden');
+  // Wayland may not deliver a first frame for an unmapped surface. Do not
+  // make mapping the surface depend on a hidden-window paint notification.
+  if (process.env.XDG_SESSION_TYPE === 'wayland' && !startHidden) {
+    mainWindow.show();
+  }
+  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+    .catch((error) => console.error('[main-window] load:', error.message));
   mainWindow.once('ready-to-show', () => {
     // Started by the login entry: come up in the tray rather than throwing a
     // window at someone who just logged in.
@@ -867,6 +890,9 @@ if (!app.requestSingleInstanceLock()) {
     screen.on('display-removed', onDisplaysChanged);
     screen.on('display-metrics-changed', onDisplaysChanged);
     createTray();
+    if (process.env.XDG_SESSION_TYPE === 'wayland') {
+      launchpad.ensureController().catch((error) => console.error('[launchpad]', error.message));
+    }
     createMainWindow();
     // Opening the panel window normally takes a click on the Dashboard page.
     // A plain flag lets shot.sh, and anyone checking the panel layout, bring

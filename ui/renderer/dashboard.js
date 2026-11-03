@@ -75,7 +75,7 @@ function applyTheme(name) {
 }
 
 function setPage(name) {
-  layout.page = name === 'media' ? 'media' : 'system';
+  layout.page = ['media', 'launchpad'].includes(name) ? name : 'system';
 }
 
 applyTheme(null);
@@ -480,7 +480,44 @@ function fit() {
   board.style.setProperty('--sy', String(sy > 0 ? sy : 1));
 }
 
+let launchpadMessage = 'Launch a game, then fit it separately. Some games require windowed mode.';
+let launchpadBusy = false;
+function launchpadTiles() {
+  const actions = [
+    ['vanguard', 'Vanguard Galaxy', 'Launch through Steam'],
+    ['steam', 'Steam library', 'Browse your games'],
+    ['fit', 'Move app to Edge', 'Fit the last active app to the Edge'],
+    ['restore', 'Move app back', 'Restore its saved position and size'],
+    ['pick', 'Choose a window', 'Click any window to fit it'],
+  ];
+  const tiles = actions.map(([action, title, detail]) => {
+    const c = card('launchpad', 4, 1);
+    const button = document.createElement('button');
+    button.style.cssText = 'width:100%;height:100%;text-align:left;padding:24px;background:transparent;color:inherit;border:0;font:inherit;cursor:pointer;white-space:normal';
+    button.textContent = `${title} — ${detail}`;
+    button.disabled = launchpadBusy;
+    button.onclick = async () => {
+      if (launchpadBusy) return;
+      launchpadBusy = true;
+      try { launchpadMessage = (await api.launchpadAction(action)).message; }
+      catch (error) { launchpadMessage = error.message; }
+      finally { launchpadBusy = false; render(); }
+    };
+    c.append(button);
+    return c;
+  });
+  const status = card('launchpad-status', 4, 1);
+  status.style.padding = '24px';
+  status.textContent = launchpadMessage;
+  tiles.push(status);
+  return tiles;
+}
+
 function render() {
+  if (layout.page === 'launchpad') {
+    board.replaceChildren(...launchpadTiles());
+    return;
+  }
   const tiles = [];
   for (const [key, cols, rows] of LAYOUTS[layout.page] || LAYOUTS.system) {
     if (layout.tiles[LABEL_OF[key]] === false) continue;
