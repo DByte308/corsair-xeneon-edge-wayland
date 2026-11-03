@@ -26,11 +26,18 @@ Native Wayland window placement/fullscreen targeting still needs end-to-end
 verification; Electron cannot assume X11-style absolute window positioning.
 Hotplug/persistence and capability reporting need further work.
 
-The new backend and modified touch code pass compiler syntax checks. The
-read-only probe finds the real digitizer and DP-1 output on the development
-machine. Existing UI tests pass. Full CMake configuration is currently blocked
-by missing hidapi-hidraw development files; no full app runtime claim is made.
+The full Release build succeeds on the Nobara development machine. All 14
+CTest suites and both UI test scripts pass. The read-only probe finds the real
+digitizer and DP-1 output. Both the unpacked UI and AppImage have been built in
+ui/dist. These are local-host builds, not portable release packages: the agent
+uses system Qt and HID libraries. Missing hidapi-devel headers were extracted
+locally under ~/.cache/edgeline-build-deps without installing system packages.
+No full app runtime claim is made; display placement remains unverified.
 No display layout or touch settings were changed during the read-only probe.
+
+The inherited npm dependency tree reports 24 vulnerabilities (including one
+critical). Dependency updates and security review are required before treating
+this experimental build as a production release.
 
 ## Read-only backend probe
 
