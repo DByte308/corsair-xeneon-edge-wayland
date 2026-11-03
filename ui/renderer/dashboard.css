@@ -367,4 +367,22 @@ html, body {
 .edge-overview .lp-error .lp-status-label { color:#fa8e8e; }
 .card.lp-error { border-color: #fa8e8e; }
 .lp-error .lp-status-label { color: #fa8e8e; }
+.edge-deck-open { display:flex; align-items:center; gap:16px; flex:none; margin:0 24px 18px; padding:16px 18px; min-height:82px; border:1px solid #7bcfff40; border-radius:16px; background:linear-gradient(110deg,#194761,#153247); color:#e8f5ff; font:inherit; cursor:pointer; text-align:left; }
+.edge-deck-open > svg { width:32px; height:32px; fill:none; stroke:#9bdbff; stroke-width:1.6; }
+.edge-deck-open > span { display:flex; flex-direction:column; gap:8px; }
+.edge-deck-open strong { font-size:20px; font-weight:600; }
+.edge-deck-open small { font-size:14px; color:#bad8ec; }
+.edge-deck-open:hover { border-color:#9bdbff; }
+.edge-deck-open:focus-visible { outline:3px solid #9ce7ff; }
+.tablet-deck-view { position:fixed; inset:0; display:flex; flex-direction:column; background:#05090f; color:#e8eef5; font-family:'IBM Plex Sans',system-ui,sans-serif; }
+.tablet-deck-view[hidden] { display:none; }
+.tablet-deck-toolbar { display:flex; align-items:center; gap:24px; flex:0 0 72px; padding:10px 24px; border-bottom:1px solid #294559; background:#0d1b28; }
+.tablet-deck-toolbar button { min-height:48px; padding:10px 24px; border:1px solid #4e819f; border-radius:12px; color:#d7f1ff; background:#173348; font:500 18px 'IBM Plex Sans',system-ui,sans-serif; cursor:pointer; }
+.tablet-deck-toolbar > div { display:flex; align-items:center; gap:20px; }
+.tablet-deck-toolbar strong { font-size:22px; }
+.tablet-deck-toolbar > div > span { font:12px var(--mono); letter-spacing:.12em; color:#a0b6c8; }
+.deck-safe-badge { margin-left:auto; color:#f2cb83; border:1px solid #f2cb8344; background:#f2cb8310; border-radius:20px; padding:10px 18px; font:12px var(--mono); letter-spacing:.06em; }
+#tablet-deck-frame { flex:1; min-height:0; width:100%; border:0; background:#05090f; }
+#tablet-deck-frame[hidden], #deck-loading[hidden] { display:none; }
+#deck-loading { padding:48px; font-size:20px; color:#a8c2d6; }
 @media (prefers-reduced-motion: reduce) { .lp-button { transition: none; } }

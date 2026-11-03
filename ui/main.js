@@ -22,6 +22,8 @@ if (process.env.XDG_SESSION_TYPE === 'wayland') {
 
 const launchpad = require('./launchpad');
 const windowOverview = require('./window-overview');
+const tabletDeck = require('./tablet-deck');
+ipcMain.handle('tablet-deck-open', () => tabletDeck.open());
 ipcMain.handle('edge-windows', () => windowOverview.snapshot());
 ipcMain.handle('edge-window-activate', async (_event, id) => {
   const result = await windowOverview.activate(id);
@@ -938,7 +940,7 @@ if (!app.requestSingleInstanceLock()) {
 
   // Not app.quit(): with a tray the app deliberately outlives its windows.
   app.on('window-all-closed', () => { if (!tray) app.quit(); });
-  app.on('before-quit', () => { quitting = true; windowOverview.stop(); });
+  app.on('before-quit', () => { quitting = true; windowOverview.stop(); tabletDeck.stop(); });
   app.on('before-quit', () => {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     if (sock) sock.destroy();

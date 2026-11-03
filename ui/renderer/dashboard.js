@@ -75,7 +75,7 @@ function applyTheme(name) {
 }
 
 function setPage(name) {
-  layout.page = ['media', 'launchpad'].includes(name) ? name : 'system';
+  layout.page = ['media', 'launchpad', 'tablet-deck'].includes(name) ? name : 'system';
 }
 
 applyTheme(null);
@@ -585,7 +585,16 @@ function edgeOverview(status) {
     };
     list.append(button);
   }
-  c.append(header, list, status);
+  const deckButton = document.createElement('button');
+  deckButton.className = 'edge-deck-open';
+  deckButton.type = 'button';
+  deckButton.append(launchpadIcon('steam'));
+  const deckCopy = document.createElement('span');
+  const deckTitle = document.createElement('strong'); deckTitle.textContent = 'Tablet Deck';
+  const deckHint = document.createElement('small'); deckHint.textContent = 'Open your Star Citizen control deck →';
+  deckCopy.append(deckTitle, deckHint); deckButton.append(deckCopy);
+  deckButton.onclick = () => api.dashboardLayout({page:'tablet-deck'});
+  c.append(header, list, deckButton, status);
   return c;
 }
 function launchpadTiles() {
@@ -651,7 +660,33 @@ function launchpadTiles() {
   return tiles;
 }
 
+let deckOpening = false;
+let deckLoaded = false;
+let deckFailed = false;
+document.getElementById('deck-home').onclick = () => {
+  deckFailed = false;
+  api.dashboardLayout({page:'launchpad'});
+};
+async function showTabletDeck() {
+  if (deckLoaded || deckOpening || deckFailed) return;
+  deckOpening = true;
+  const message = document.getElementById('deck-loading');
+  try {
+    const {url, dryRun} = await api.openTabletDeck();
+    const target = new URL(url);
+    if (target.origin !== 'http://127.0.0.1:8790' || !dryRun) throw new Error('Unsafe Tablet Deck endpoint refused');
+    const frame = document.getElementById('tablet-deck-frame');
+    frame.onload = () => { message.hidden = true; frame.hidden = false; };
+    frame.src = target.href;
+    deckLoaded = true;
+  } catch (error) { message.textContent = `${error.message}. Return Home and reopen Tablet Deck to retry.`; deckFailed = true; }
+  finally { deckOpening = false; }
+}
 function render() {
+  const isDeck = layout.page === 'tablet-deck';
+  board.style.display = isDeck ? 'none' : '';
+  document.getElementById('tablet-deck-view').hidden = !isDeck;
+  if (isDeck) { showTabletDeck(); return; }
   if (layout.page === 'launchpad') {
     const focusedAction = document.activeElement?.dataset?.action;
     const focusedWindow = document.activeElement?.dataset?.windowId;

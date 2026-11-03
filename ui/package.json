@@ -30,6 +30,7 @@
       "main.js",
       "launchpad.js",
       "window-overview.js",
+      "tablet-deck.js",
       "window-bridge.py",
       "kwin-window-overview.js",
       "kwin-activate-window.js",

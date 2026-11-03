@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('edgeline', {
   autostartSet: (on) => ipcRenderer.invoke('autostart-set', on),
   deviceLabelGet: () => ipcRenderer.invoke('device-label-get'),
   deviceLabelSet: (label) => ipcRenderer.invoke('device-label-set', label),
+  openTabletDeck: () => ipcRenderer.invoke('tablet-deck-open'),
   edgeWindows: () => ipcRenderer.invoke('edge-windows'),
   activateEdgeWindow: (id) => ipcRenderer.invoke('edge-window-activate', id),
   launchpadAction: (action) => ipcRenderer.invoke('launchpad-action', action),

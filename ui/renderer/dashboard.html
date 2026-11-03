@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:;">
+      content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; frame-src http://127.0.0.1:8790;">
 <title>EdgeLine dashboard</title>
 <!-- The panel has its own palette and its own typeface and does not follow the
      control window's four themes, so styles.css is deliberately not loaded. -->
@@ -12,6 +12,15 @@
 <body>
 <div id="board"></div>
 <div id="offline">agent not running</div>
+<section id="tablet-deck-view" class="tablet-deck-view" hidden>
+  <header class="tablet-deck-toolbar">
+    <button id="deck-home" type="button">← Home</button>
+    <div><strong>Tablet Deck</strong><span>EDGE CONTROL DECK</span></div>
+    <span class="deck-safe-badge">PREVIEW · NO KEYS SENT</span>
+  </header>
+  <div id="deck-loading" role="status">Starting your local control deck…</div>
+  <iframe id="tablet-deck-frame" title="Tablet Deck Edge controls" sandbox="allow-scripts allow-same-origin" hidden></iframe>
+</section>
 <script src="dashboard.js"></script>
 </body>
 </html>

@@ -84,6 +84,7 @@ if (typeof api !== 'undefined' && typeof api.onDashboardStatus === 'function') {
 // impression of it.
 const DASH_PAGES = [
   { id: 'launchpad', label: 'Launchpad', tiles: [] },
+  { id: 'tablet-deck', label: 'Tablet Deck', tiles: [] },
   { id: 'system', label: 'System',
     tiles: [['Clock', 3, 2], ['CPU', 3, 1], ['GPU', 3, 1], ['Notifications', 3, 3],
             ['Memory', 2, 1], ['Disk I/O', 2, 1], ['Network', 2, 1],
