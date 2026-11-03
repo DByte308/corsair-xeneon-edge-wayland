@@ -34,6 +34,9 @@ agent/build/
 ui/node_modules/
 ui/dist/
 
+# Rust backend build output
+rust-backend/target/
+
 # Packaging output
 dist/
 build-appimage/

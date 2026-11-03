@@ -29,6 +29,8 @@
     "files": [
       "main.js",
       "launchpad.js",
+      "rust-backend.js",
+      "rust-services.js",
       "window-selection.js",
       "window-overview.js",
       "tablet-deck.js",
@@ -47,6 +49,10 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "../rust-backend/target/release/edgeline-backend",
+        "to": "backend/edgeline-backend"
+      },
       {
         "from": "../agent/build/edgeline-agent",
         "to": "agent/edgeline-agent"

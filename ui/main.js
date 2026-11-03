@@ -20,8 +20,10 @@ if (process.env.XDG_SESSION_TYPE === 'wayland') {
   app.commandLine.appendSwitch('ozone-platform', 'wayland');
 }
 
-const launchpad = require('./launchpad');
-const windowOverview = require('./window-overview');
+// Opt-in migration path: keep the deployed app as a rollback until parity is tested.
+const rustBackendEnabled = process.env.EDGELINE_BACKEND === 'rust';
+const launchpad = rustBackendEnabled ? require('./rust-services').launchpad : require('./launchpad');
+const windowOverview = rustBackendEnabled ? require('./rust-services').windowOverview : require('./window-overview');
 const tabletDeck = require('./tablet-deck');
 ipcMain.handle('tablet-deck-open', () => tabletDeck.open());
 ipcMain.handle('edge-windows', () => windowOverview.snapshot());
