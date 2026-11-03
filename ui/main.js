@@ -44,7 +44,7 @@ ipcMain.handle('launchpad-action', async (_event, action) => {
   const result = await launchpad.action(action, shell);
   if (dashWindow && !dashWindow.isDestroyed()) {
     // Let ordinary apps cover the dashboard after fitting them to the Edge.
-    if (['fit', 'fit-vanguard', 'pick'].includes(action)) dashWindow.setAlwaysOnTop(false);
+    if (['fit', 'fit-vanguard', 'pick'].includes(action) && !result.cancelled) dashWindow.setAlwaysOnTop(false);
     if (action === 'restore') dashWindow.setAlwaysOnTop(true, 'screen-saver');
   }
   return result;

@@ -6,6 +6,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { createHash } = require('crypto');
+const { selectedWindow } = require('./window-selection');
+let pickerInProgress = false;
 // KGlobalAccel retains action names after scripts stop. Version the names by
 // controller content so a rebuilt UI never invokes a stale script callback.
 const controllerVersion = createHash('sha256')
@@ -82,6 +84,22 @@ async function action(name, shell) {
       dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'unloadScript', 's', tag).catch(() => {});
     }, 5000).unref();
     return { message: 'Dashboard placement requested directly from KWin' };
+  }
+  if (name === 'pick') {
+    if (pickerInProgress) throw new Error('Window selection is already active; click an app or press Esc');
+    pickerInProgress = true;
+    try {
+      await ensureController();
+      const {stdout} = await run('busctl', ['--user', '--timeout=120', '--json=short', 'call',
+        'org.kde.KWin', '/KWin', 'org.kde.KWin', 'queryWindowInfo'], {timeout:125000});
+      const selected = selectedWindow(stdout);
+      await dbus('org.kde.kglobalaccel', '/component/kwin', 'org.kde.kglobalaccel.Component',
+        'invokeShortcut', 's', `${shortcutPrefix}Window${selected.suffix}`);
+      return {message:'Selected app sent to the Edge'};
+    } catch (error) {
+      if (/UserCancel|User cancelled/i.test(error.stderr || error.message)) return {message:'Window selection cancelled',cancelled:true};
+      throw new Error(`Could not select that app. Press Esc if the crosshair is still active. ${error.message}`);
+    } finally { pickerInProgress = false; }
   }
   if (!Object.hasOwn(ACTIONS, name)) throw new Error('Unknown launchpad action');
   if (process.env.XDG_SESSION_TYPE !== 'wayland') throw new Error('Window controls require KDE Wayland');

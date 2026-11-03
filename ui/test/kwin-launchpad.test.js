@@ -33,7 +33,7 @@ shortcuts.EdgeLineFit(); // repeated fit must not overwrite saved original geome
 shortcuts.EdgeLineRestore();
 checkOriginal();
 assert.equal(target.fullScreen, true);
-shortcuts.EdgeLinePick();
+shortcuts.EdgeLineWindowgame();
 assert.equal(target.frameGeometry.width, 2464);
 shortcuts.EdgeLineRestore();
 workspace.screens = [];

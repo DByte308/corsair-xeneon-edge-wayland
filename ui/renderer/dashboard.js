@@ -636,7 +636,7 @@ function launchpadTiles() {
       if (launchpadBusy) return;
       launchpadBusy = true;
       launchpadError = false;
-      launchpadMessage = `${title}…`;
+      launchpadMessage = action === 'pick' ? 'Click the app window you want to bring here. Press Esc to cancel.' : `${title}…`;
       render();
       try { launchpadMessage = (await api.launchpadAction(action)).message; }
       catch (error) { launchpadMessage = error.message; launchpadError = true; }

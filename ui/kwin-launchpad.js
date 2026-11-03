@@ -95,14 +95,15 @@
         delete saved[id];
         print('EdgeLine: restored ' + w.caption);
     });
-    registerShortcut('EdgeLinePick', 'EdgeLine: choose app to fit', '', function () {
-        callDBus('org.kde.KWin', '/KWin', 'org.kde.KWin', 'queryWindowInfo', function (info) {
-            if (!info || !info.uuid) return;
-            var windows = workspace.windowList();
-            for (var i = 0; i < windows.length; i++) {
-                if (String(windows[i].internalId) === String(info.uuid)) { fit(windows[i]); return; }
-            }
+    function registerWindowFit(w) {
+        if (!eligible(w)) return;
+        var suffix = String(w.internalId).replace(/[^a-z0-9]/gi, '');
+        registerShortcut('EdgeLineWindow' + suffix, 'EdgeLine: fit selected window', '', function () {
+            // The selected window may have closed while the picker was active.
+            if (workspace.windowList().indexOf(w) >= 0) fit(w);
         });
-    });
+    }
+    workspace.windowList().forEach(registerWindowFit);
+    workspace.windowAdded.connect(registerWindowFit);
     print('EdgeLine: launchpad window controller ready');
 })();
