@@ -3,6 +3,19 @@
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
+let scriptDirectory;
+function scriptPath(name) {
+  // KWin is outside Electron and cannot read virtual app.asar paths.
+  if (!scriptDirectory) {
+    scriptDirectory = fs.mkdtempSync(path.join(process.env.XDG_RUNTIME_DIR || os.tmpdir(), 'edgeline-kwin-'));
+    fs.chmodSync(scriptDirectory, 0o700);
+  }
+  const destination = path.join(scriptDirectory, name);
+  fs.writeFileSync(destination, fs.readFileSync(path.join(__dirname, name)), { mode: 0o600 });
+  return destination;
+}
 const run = promisify(execFile);
 const ACTIONS = { fit: 'EdgeLineFit', restore: 'EdgeLineRestore', pick: 'EdgeLinePick',
   panel: 'EdgeLinePanel', 'fit-vanguard': 'EdgeLineVanguardFit' };
@@ -15,7 +28,7 @@ async function ensureController() {
   const loaded = await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'isScriptLoaded', 's', plugin);
   if (loaded === 'b true') return;
   const answer = await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'loadScript', 'ss',
-    path.join(__dirname, 'kwin-launchpad.js'), plugin);
+    scriptPath('kwin-launchpad.js'), plugin);
   const match = /^i (\d+)$/.exec(answer);
   if (!match) throw new Error('KWin refused the launchpad controller');
   await dbus('org.kde.KWin', `/Scripting/Script${match[1]}`, 'org.kde.kwin.Script', 'run');
@@ -32,7 +45,7 @@ async function action(name, shell) {
   if (name === 'panel') {
     const tag = `edgeline-panel-${process.pid}-${Date.now()}`;
     const answer = await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'loadScript', 'ss',
-      path.join(__dirname, 'kwin-place-panel.js'), tag);
+      scriptPath('kwin-place-panel.js'), tag);
     const match = /^i (\d+)$/.exec(answer);
     if (!match) throw new Error('KWin refused dashboard placement');
     await dbus('org.kde.KWin', `/Scripting/Script${match[1]}`, 'org.kde.kwin.Script', 'run');
