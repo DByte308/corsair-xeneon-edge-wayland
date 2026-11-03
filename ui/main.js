@@ -440,6 +440,9 @@ function openDashboardWindow() {
   if (!edge) return { ok: false, error: 'the Edge is not attached to this session' };
   if (dashWindow && !dashWindow.isDestroyed()) {
     dashWindow.show();
+    if (process.env.XDG_SESSION_TYPE === 'wayland') {
+      launchpad.action('panel', shell).catch((error) => console.error('[panel]', error.message));
+    }
     notify('dashboard-status', { open: true });
     refreshTray();
     return { ok: true };

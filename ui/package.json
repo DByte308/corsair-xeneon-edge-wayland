@@ -30,6 +30,7 @@
       "main.js",
       "launchpad.js",
       "kwin-launchpad.js",
+      "kwin-place-panel.js",
       "preload.js",
       "edge-display.js",
       "distro.js",

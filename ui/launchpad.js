@@ -29,6 +29,19 @@ async function action(name, shell) {
     await shell.openExternal('steam://open/library');
     return { message: 'Steam library requested' };
   }
+  if (name === 'panel') {
+    const tag = `edgeline-panel-${process.pid}-${Date.now()}`;
+    const answer = await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'loadScript', 'ss',
+      path.join(__dirname, 'kwin-place-panel.js'), tag);
+    const match = /^i (\d+)$/.exec(answer);
+    if (!match) throw new Error('KWin refused dashboard placement');
+    await dbus('org.kde.KWin', `/Scripting/Script${match[1]}`, 'org.kde.kwin.Script', 'run');
+    // run() queues execution in KWin. Immediate unloading can cancel it.
+    setTimeout(() => {
+      dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'unloadScript', 's', tag).catch(() => {});
+    }, 5000).unref();
+    return { message: 'Dashboard placement requested directly from KWin' };
+  }
   if (!Object.hasOwn(ACTIONS, name)) throw new Error('Unknown launchpad action');
   if (process.env.XDG_SESSION_TYPE !== 'wayland') throw new Error('Window controls require KDE Wayland');
   await ensureController();
