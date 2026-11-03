@@ -5,6 +5,12 @@ const { promisify } = require('util');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { createHash } = require('crypto');
+// KGlobalAccel retains action names after scripts stop. Version the names by
+// controller content so a rebuilt UI never invokes a stale script callback.
+const controllerVersion = createHash('sha256')
+  .update(fs.readFileSync(path.join(__dirname, 'kwin-launchpad.js'))).digest('hex').slice(0, 12);
+const shortcutPrefix = `EdgeLine${controllerVersion}`;
 let scriptDirectory;
 function scriptPath(name) {
   // KWin is outside Electron and cannot read virtual app.asar paths.
@@ -13,13 +19,17 @@ function scriptPath(name) {
     fs.chmodSync(scriptDirectory, 0o700);
   }
   const destination = path.join(scriptDirectory, name);
-  fs.writeFileSync(destination, fs.readFileSync(path.join(__dirname, name)), { mode: 0o600 });
+  let source = fs.readFileSync(path.join(__dirname, name), 'utf8');
+  if (name === 'kwin-launchpad.js') {
+    source = source.replaceAll("registerShortcut('EdgeLine", `registerShortcut('${shortcutPrefix}`);
+  }
+  fs.writeFileSync(destination, source, { mode: 0o600 });
   return destination;
 }
 const run = promisify(execFile);
-const ACTIONS = { fit: 'EdgeLineFit', restore: 'EdgeLineRestore', pick: 'EdgeLinePick',
-  panel: 'EdgeLinePanel', 'fit-vanguard': 'EdgeLineVanguardFit' };
-const plugin = 'edgeline-launchpad';
+const ACTIONS = { fit: `${shortcutPrefix}Fit`, restore: `${shortcutPrefix}Restore`, pick: `${shortcutPrefix}Pick`,
+  panel: `${shortcutPrefix}Panel`, 'fit-vanguard': `${shortcutPrefix}VanguardFit` };
+const plugin = `edgeline-launchpad-${controllerVersion}`;
 async function dbus(...args) {
   const { stdout } = await run('busctl', ['--user', 'call', ...args], { timeout: 5000 });
   return stdout.trim();
