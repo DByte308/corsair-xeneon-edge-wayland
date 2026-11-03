@@ -25,7 +25,7 @@ ipcMain.handle('launchpad-action', async (_event, action) => {
   const result = await launchpad.action(action, shell);
   if (dashWindow && !dashWindow.isDestroyed()) {
     // Let ordinary apps cover the dashboard after fitting them to the Edge.
-    if (action === 'fit' || action === 'pick') dashWindow.setAlwaysOnTop(false);
+    if (['fit', 'fit-vanguard', 'pick'].includes(action)) dashWindow.setAlwaysOnTop(false);
     if (action === 'restore') dashWindow.setAlwaysOnTop(true, 'screen-saver');
   }
   return result;
@@ -481,6 +481,9 @@ function openDashboardWindow() {
       dashWindow.setBounds(panelBounds(edge));
       const b = dashWindow.getBounds();
       console.log(`[panel] bounds ${b.width}x${b.height}+${b.x}+${b.y}`);
+      if (process.env.XDG_SESSION_TYPE === 'wayland') {
+        launchpad.action('panel', shell).catch((error) => console.error('[panel]', error.message));
+      }
     }, 250);
   };
 

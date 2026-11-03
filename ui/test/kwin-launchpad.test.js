@@ -14,6 +14,7 @@ const target = { internalId: 'game', normalWindow: true, resourceClass: 'game', 
 const screen = { geometry: { x: 3000, y: 0, width: 2560, height: 720 } };
 let activated, removed;
 const workspace = { activeWindow: target, screens: [screen], currentDesktop: {},
+  windowAdded: { connect() {} },
   windowActivated: { connect(cb) { activated = cb; } },
   windowRemoved: { connect(cb) { removed = cb; } },
   clientArea() { return screen.geometry; },

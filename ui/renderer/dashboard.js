@@ -485,6 +485,7 @@ let launchpadBusy = false;
 function launchpadTiles() {
   const actions = [
     ['vanguard', 'Vanguard Galaxy', 'Launch through Steam'],
+    ['fit-vanguard', 'Move Vanguard to Edge', 'Target Vanguard Galaxy directly'],
     ['steam', 'Steam library', 'Browse your games'],
     ['fit', 'Move app to Edge', 'Fit the last active app to the Edge'],
     ['restore', 'Move app back', 'Restore its saved position and size'],

@@ -3,6 +3,7 @@
 (function () {
     'use strict';
     var previous = null;
+    var lastFitted = null;
     var saved = {};
     function eligible(w) {
         return w && w.normalWindow && !/edgeline|electron/i.test(String(w.resourceClass))
@@ -13,6 +14,7 @@
     workspace.windowActivated.connect(remember);
     workspace.windowRemoved.connect(function (w) {
         if (previous === w) previous = null;
+        if (lastFitted === w) lastFitted = null;
         delete saved[String(w.internalId)];
     });
     function fit(w) {
@@ -32,14 +34,38 @@
         w.setMaximize(false, false);
         var area = workspace.clientArea(KWin.MaximizeArea, outputs[0], workspace.currentDesktop);
         w.frameGeometry = {x:area.x,y:area.y,width:area.width,height:area.height};
+        workspace.windowList().forEach(function (panel) {
+            if (String(panel.caption) === 'EdgeLine dashboard') panel.keepAbove = false;
+        });
         previous = w;
+        lastFitted = w;
         workspace.activeWindow = w;
         print('EdgeLine: fitted ' + w.caption);
     }
+    function placePanel(w) {
+        if (!w || String(w.caption) !== 'EdgeLine dashboard') return;
+        var outputs = workspace.screens.filter(function (s) {
+            return s.geometry.width === 2560 && s.geometry.height === 720;
+        });
+        if (outputs.length !== 1) return;
+        var g = outputs[0].geometry;
+        w.frameGeometry = {x:g.x,y:g.y,width:g.width,height:g.height};
+    }
+    workspace.windowAdded.connect(placePanel);
+    workspace.windowList().forEach(placePanel);
+    registerShortcut('EdgeLinePanel', 'EdgeLine: place dashboard', '', function () {
+        workspace.windowList().forEach(placePanel);
+    });
+    registerShortcut('EdgeLineVanguardFit', 'EdgeLine: fit Vanguard Galaxy', '', function () {
+        var games = workspace.windowList().filter(function (w) {
+            return String(w.resourceClass).toLowerCase() === 'steam_app_3471800';
+        });
+        if (games.length === 1) fit(games[0]);
+    });
     registerShortcut('EdgeLineFit', 'EdgeLine: fit last app to Edge', '', function () { fit(previous); });
     registerShortcut('EdgeLineRestore', 'EdgeLine: restore last app', '', function () {
-        if (!previous) return;
-        var id = String(previous.internalId), old = saved[id];
+        if (!lastFitted) return;
+        var id = String(lastFitted.internalId), old = saved[id];
         if (!old) { print('EdgeLine: no saved placement for target'); return; }
         var w = old.window;
         w.fullScreen = false;

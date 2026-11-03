@@ -504,7 +504,7 @@ PAGES.dashboard = (host) => {
 
     dashUi.page === 'launchpad'
       ? el('div', { class: 'card', style: 'padding:20px;margin-bottom:16px;display:flex;gap:12px;flex-wrap:wrap' },
-          ...[['vanguard', 'Launch Vanguard Galaxy'], ['steam', 'Steam library'],
+          ...[['vanguard', 'Launch Vanguard Galaxy'], ['fit-vanguard', 'Move Vanguard to Edge'], ['steam', 'Steam library'],
               ['fit', 'Move app to Edge'], ['restore', 'Move app back'], ['pick', 'Choose window']]
             .map(([action, label]) => el('button', {
               class: 'btn',

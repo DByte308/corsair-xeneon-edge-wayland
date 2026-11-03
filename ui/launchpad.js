@@ -4,7 +4,8 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
 const run = promisify(execFile);
-const ACTIONS = { fit: 'EdgeLineFit', restore: 'EdgeLineRestore', pick: 'EdgeLinePick' };
+const ACTIONS = { fit: 'EdgeLineFit', restore: 'EdgeLineRestore', pick: 'EdgeLinePick',
+  panel: 'EdgeLinePanel', 'fit-vanguard': 'EdgeLineVanguardFit' };
 const plugin = 'edgeline-launchpad';
 async function dbus(...args) {
   const { stdout } = await run('busctl', ['--user', 'call', ...args], { timeout: 5000 });
