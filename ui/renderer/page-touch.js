@@ -4,7 +4,7 @@
 
 const TOUCH_MODES = [
   { id: 'off', label: 'Off', glyph: 'no input', icon: 'fa-solid fa-ban',
-    desc: 'Digitizer disabled in xinput. The panel is display-only.' },
+    desc: 'Digitizer disabled. The panel is display-only.' },
   { id: 'main-cursor', label: 'Main cursor', glyph: '↖ shared', icon: 'fa-solid fa-arrow-pointer',
     desc: 'Mapped to the Edge only; your pointer jumps there on touch.' },
   { id: 'own-pointer', label: 'Own pointer', glyph: '↖ + ↖ split', icon: 'fa-solid fa-clone',
@@ -42,11 +42,14 @@ async function setTouchMode(id) {
 
 function modeCard(m) {
   const selected = state.touch.mode === m.id;
+  const unsupported = state.system.sessionType === 'wayland'
+    && !['off', 'main-cursor'].includes(m.id);
   return el('div', {
     style: 'border-radius:12px;padding:12px 14px;cursor:pointer;background:var(--card);'
          + `border:1px solid ${selected ? 'var(--accent)' : 'var(--border)'};`
-         + (touchUi.busy ? 'opacity:.6;pointer-events:none;' : ''),
-    onclick: () => setTouchMode(m.id),
+         + (touchUi.busy || unsupported ? 'opacity:.6;pointer-events:none;' : ''),
+    title: unsupported ? 'This mode requires X11' : '',
+    onclick: () => { if (!unsupported) setTouchMode(m.id); },
   },
     el('div', { style: 'display:flex;align-items:center;gap:10px' },
       el('div', {
@@ -92,11 +95,11 @@ function calibrationCard() {
           catch (err) { touchUi.error = err.message; }
           render();
         },
-      }, 'Reset matrix')),
+      }, isX11 ? 'Reset matrix' : 'Map touch to Edge')),
     !isX11
       ? el('div', { style: 'flex-basis:100%' },
-          unavailableNote('Touch mapping is X11 only. The transformation matrix, the '
-            + 'floating-pointer modes and the raw touch reader all go through xinput and XInput2.'))
+          unavailableNote('KDE Wayland supports native touchscreen mapping and enable/disable through KWin. '
+            + 'Five-point calibration, separate pointers and global raw-touch effects are not yet supported.'))
       : null);
 }
 

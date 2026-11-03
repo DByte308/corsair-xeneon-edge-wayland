@@ -28,6 +28,10 @@ TouchEventSource::~TouchEventSource()
 
 bool TouchEventSource::start()
 {
+    if (qEnvironmentVariable("XDG_SESSION_TYPE") == QLatin1String("wayland")) {
+        m_error = QStringLiteral("Global raw touch capture is unavailable on Wayland");
+        return false;
+    }
     if (m_dpy)
         return true;
 

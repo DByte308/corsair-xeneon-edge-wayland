@@ -68,6 +68,10 @@ FocusWatcher::~FocusWatcher() { stop(); }
 
 bool FocusWatcher::start()
 {
+    if (qEnvironmentVariable("XDG_SESSION_TYPE") == QLatin1String("wayland")) {
+        m_error = QStringLiteral("Per-window rules need a native Wayland backend; XWayland cannot observe all windows");
+        return false;
+    }
     if (m_dpy)
         return true;
 

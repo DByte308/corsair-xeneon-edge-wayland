@@ -27,7 +27,7 @@ add_compile_definitions(EDGELINE_CODENAME="${EDGELINE_CODENAME}")
 
 # Where the update check looks. A fork should point this at its own repo rather
 # than silently telling its users to install someone else's releases.
-set(EDGELINE_UPDATE_REPO "aabdelghani/corsair-xeneon-edge-linux" CACHE STRING
+set(EDGELINE_UPDATE_REPO "DByte308/corsair-xeneon-edge-wayland" CACHE STRING
     "GitHub owner/repo the update check queries")
 add_compile_definitions(EDGELINE_UPDATE_REPO="${EDGELINE_UPDATE_REPO}")
 
@@ -78,6 +78,7 @@ add_library(edgeline_core STATIC
     src/core/TouchConfig.cpp
     src/core/SensorSource.cpp
     src/core/TouchControl.cpp
+    src/core/WaylandTouch.cpp
     src/core/UpdateChecker.cpp
     src/core/WriteGate.cpp
     src/ipc/RpcClient.cpp

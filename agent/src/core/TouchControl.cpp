@@ -2,6 +2,7 @@
 #include "core/TouchControl.h"
 
 #include "core/XinputParse.h"
+#include "core/WaylandTouch.h"
 
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -49,6 +50,7 @@ bool TouchControl::isX11()
 QList<int> TouchControl::deviceIds()
 {
     QList<int> ids;
+    if (wayland::active()) return ids;
     int rc = 0;
     const QString out = runCapture(QStringLiteral("xinput"),
                                    { QStringLiteral("list"), QStringLiteral("--short") }, &rc);
@@ -147,6 +149,10 @@ int TouchControl::ensureEdgeMaster()
 
 TouchControl::Mode TouchControl::mode()
 {
+    if (wayland::active()) {
+        const auto ids = wayland::devices();
+        return !ids.isEmpty() && wayland::enabled(ids.first()) ? Mode::MainCursor : Mode::Off;
+    }
     const QList<int> ids = deviceIds();
     if (ids.isEmpty())
         return Mode::Off;
@@ -181,6 +187,18 @@ TouchControl::Mode TouchControl::mode()
 
 bool TouchControl::setMode(Mode m)
 {
+    if (wayland::active()) {
+        if (m != Mode::Off && m != Mode::MainCursor) {
+            m_detail = tr("KDE Wayland supports Off and Main cursor; independent pointer and global ripple capture require X11.");
+            emit stateChanged(State::Unsupported, m_detail);
+            return false;
+        }
+        // Map before enabling: never enable touch across the entire desktop.
+        const bool ok = m == Mode::Off ? wayland::setEnabled(false)
+            : wayland::mapToOutput() && wayland::setEnabled(true);
+        refresh();
+        return ok;
+    }
     if (!isX11()) {
         m_detail = tr("Touch modes need X11 (xinput).");
         emit stateChanged(State::Unsupported, m_detail);
@@ -272,6 +290,7 @@ int TouchControl::masterPointerId()
 
 QString TouchControl::edgeOutputName()
 {
+    if (wayland::active()) return wayland::edgeOutput();
     int rc = 0;
     const QString out = runCapture(QStringLiteral("xrandr"), { QStringLiteral("--query") }, &rc);
     if (rc != 0)
@@ -285,6 +304,16 @@ QString TouchControl::edgeOutputName()
 
 TouchControl::State TouchControl::refresh()
 {
+    if (wayland::active()) {
+        const auto ids = wayland::devices();
+        m_state = ids.isEmpty() ? State::NotFound
+            : wayland::enabled(ids.first()) ? State::Enabled : State::Disabled;
+        m_detail = ids.isEmpty()
+            ? tr("Edge touchscreen not found through KWin D-Bus (KDE Plasma required).")
+            : tr("KDE Wayland native touch. Off and Main cursor are supported; mapping is managed by KWin.");
+        emit stateChanged(m_state, m_detail);
+        return m_state;
+    }
     if (!isX11()) {
         m_state = State::Unsupported;
         m_detail = tr("Touch toggle needs X11 (xinput). This session isn't X11.");
@@ -316,6 +345,7 @@ TouchControl::State TouchControl::refresh()
 QList<double> TouchControl::matrix()
 {
     QList<double> ident{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+    if (wayland::active()) return ident;
     const QList<int> ids = deviceIds();
     if (ids.isEmpty())
         return ident;
@@ -336,6 +366,7 @@ QList<double> TouchControl::matrix()
 
 bool TouchControl::applyOutputMapping()
 {
+    if (wayland::active()) return wayland::mapToOutput();
     const QString out = edgeOutputName();
     if (out.isEmpty())
         return false;
@@ -352,6 +383,9 @@ bool TouchControl::applyOutputMapping()
 
 bool TouchControl::setMatrix(const QList<double>& m)
 {
+    // KWin uses a different (4x4) calibration representation. Never pass an
+    // X11 desktop transformation matrix to it or claim it was applied.
+    if (wayland::active()) return false;
     if (m.size() != 9)
         return false;
     QStringList vals;
@@ -372,6 +406,7 @@ bool TouchControl::setMatrix(const QList<double>& m)
 
 bool TouchControl::setPointerEnabled(bool enabled)
 {
+    if (wayland::active()) return setMode(enabled ? Mode::MainCursor : Mode::Off);
     if (!isX11()) {
         m_detail = tr("Not X11; cannot change touch input.");
         emit stateChanged(State::Unsupported, m_detail);

@@ -15,6 +15,11 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 
+// Select native Wayland before Electron becomes ready; X11 remains supported.
+if (process.env.XDG_SESSION_TYPE === 'wayland') {
+  app.commandLine.appendSwitch('ozone-platform', 'wayland');
+}
+
 const AGENT_NAME = 'edgeline-agent';
 const APP_ICON = path.join(__dirname, 'assets', 'icons', '256x256.png');
 const SOCKET = path.join(
