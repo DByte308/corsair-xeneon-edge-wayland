@@ -25,6 +25,14 @@ const windowOverview = require('./window-overview');
 const tabletDeck = require('./tablet-deck');
 ipcMain.handle('tablet-deck-open', () => tabletDeck.open());
 ipcMain.handle('edge-windows', () => windowOverview.snapshot());
+ipcMain.handle('edge-taskbar-action', (_event, action) => {
+  if (action === 'home') {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+    return openDashboardWindow();
+  }
+  if (action === 'settings') { showMainWindow(); return {ok:true}; }
+  throw new Error('Unknown taskbar action');
+});
 ipcMain.handle('edge-window-activate', async (_event, id) => {
   const result = await windowOverview.activate(id);
   for (const w of [mainWindow, dashWindow]) {
@@ -52,6 +60,8 @@ const RPC_TIMEOUT_MS = 8000;
 const RECONNECT_MS = 1500;
 const MAX_AUTO_RESTARTS = 3;
 
+const EDGE_TASKBAR_WIDTH = 96;
+let taskbarWindow = null;
 let mainWindow = null;
 let tray = null;
 let quitting = false;
@@ -323,14 +333,42 @@ function edgeDisplay() {
   return findEdgeDisplay(screen.getAllDisplays(), primary ? primary.id : null);
 }
 
+function edgeContentBounds(edge) {
+  return {...edge.bounds, x:edge.bounds.x + EDGE_TASKBAR_WIDTH,
+    width:edge.bounds.width - EDGE_TASKBAR_WIDTH};
+}
+function createEdgeTaskbar() {
+  if (taskbarWindow && !taskbarWindow.isDestroyed()) return;
+  const edge = edgeDisplay();
+  if (!edge) return;
+  taskbarWindow = new BrowserWindow({
+    title:'EdgeLine taskbar', x:edge.bounds.x, y:edge.bounds.y,
+    width:EDGE_TASKBAR_WIDTH, height:edge.bounds.height,
+    minWidth:EDGE_TASKBAR_WIDTH, minHeight:100,
+    frame:false, resizable:true, skipTaskbar:true, focusable:false,
+    alwaysOnTop:true, show:false, backgroundColor:'#09131e',
+    webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false,sandbox:true},
+  });
+  taskbarWindow.setAlwaysOnTop(true,'screen-saver');
+  const place=()=>{
+    if (!taskbarWindow || taskbarWindow.isDestroyed() || !edgeDisplay()) return;
+    taskbarWindow.showInactive();
+    if (process.env.XDG_SESSION_TYPE==='wayland') {
+      launchpad.action('panel',shell).catch(error=>console.error('[taskbar]',error.message));
+    }
+  };
+  taskbarWindow.webContents.once('did-finish-load',place);
+  taskbarWindow.loadFile(path.join(__dirname,'renderer','taskbar.html'));
+  taskbarWindow.on('closed',()=>{taskbarWindow=null;});
+}
 function createMainWindow() {
   // shot.sh can ask for a taller window so a whole page fits in one capture.
   const edge = edgeDisplay();
   mainWindow = new BrowserWindow({
     title: 'EdgeLine',
     icon: APP_ICON,
-    ...(edge ? { x: edge.bounds.x, y: edge.bounds.y } : {}),
-    width: edge ? edge.bounds.width : 1200,
+    ...(edge ? { x: edge.bounds.x + EDGE_TASKBAR_WIDTH, y: edge.bounds.y } : {}),
+    width: edge ? edge.bounds.width - EDGE_TASKBAR_WIDTH : 1200,
     height: edge ? edge.bounds.height : 720,
     minWidth: 940,
     minHeight: 620,
@@ -416,7 +454,7 @@ let rippleWindow = null;
 // top. A panel boxed in on both sides of an axis keeps the trimmed pixel on
 // that axis, which is the lesser problem.
 function panelBounds(edge) {
-  const e = edge.bounds;
+  const e = edgeContentBounds(edge);
   const others = screen.getAllDisplays().filter((d) => d.id !== edge.id).map((d) => d.bounds);
   const clear = (r) => !others.some((o) => r.x < o.x + o.width && o.x < r.x + r.width
                                         && r.y < o.y + o.height && o.y < r.y + r.height);
@@ -466,8 +504,8 @@ function openDashboardWindow() {
   dashWindow = new BrowserWindow({
     title: 'EdgeLine dashboard',
     icon: APP_ICON,
-    x: edge.bounds.x, y: edge.bounds.y,
-    width: edge.bounds.width, height: edge.bounds.height,
+    x: edge.bounds.x + EDGE_TASKBAR_WIDTH, y: edge.bounds.y,
+    width: edge.bounds.width - EDGE_TASKBAR_WIDTH, height: edge.bounds.height,
     // Resizable on purpose. resizable:false publishes a minimum and maximum
     // size of exactly 2560x720, and with both pinned mutter will neither
     // fullscreen the window nor place it at the monitor's full size: it came
@@ -592,7 +630,7 @@ function showMainWindow() {
   const edge = edgeDisplay();
   if (!edge) { mainWindow.hide(); return; }
   if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.setBounds(edge.bounds);
+  mainWindow.setBounds(edgeContentBounds(edge));
   if (dashWindow && !dashWindow.isDestroyed()) dashWindow.setAlwaysOnTop(false);
   mainWindow.show();
   mainWindow.focus();
@@ -911,10 +949,12 @@ if (!app.requestSingleInstanceLock()) {
       const present = !!edgeDisplay();
       notify('displays-changed', { edgePresent: present });
       if (!present) {
-        for (const w of [mainWindow, dashWindow, calWindow, rippleWindow]) {
+        for (const w of [mainWindow, dashWindow, calWindow, rippleWindow, taskbarWindow]) {
           if (w && !w.isDestroyed()) w.hide();
         }
       } else if (process.env.XDG_SESSION_TYPE === 'wayland') {
+        createEdgeTaskbar();
+        if (taskbarWindow && !taskbarWindow.isDestroyed()) taskbarWindow.showInactive();
         launchpad.action('panel', shell).catch((error) => console.error('[edge-windows]', error.message));
       }
       refreshTray();
@@ -927,6 +967,7 @@ if (!app.requestSingleInstanceLock()) {
       await launchpad.ensureController().catch((error) => console.error('[launchpad]', error.message));
     }
     windowOverview.start().catch((error) => console.error('[window-overview]', error.message));
+    createEdgeTaskbar();
     createMainWindow();
     // Opening the panel window normally takes a click on the Dashboard page.
     // A plain flag lets shot.sh, and anyone checking the panel layout, bring

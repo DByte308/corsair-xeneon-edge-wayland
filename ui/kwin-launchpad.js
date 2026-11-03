@@ -33,7 +33,9 @@
         w.fullScreen = false;
         w.setMaximize(false, false);
         var area = workspace.clientArea(KWin.MaximizeArea, outputs[0], workspace.currentDesktop);
-        w.frameGeometry = {x:area.x,y:area.y,width:area.width,height:area.height};
+        var railRight = outputs[0].geometry.x + 96;
+        var contentX = Math.max(area.x, railRight);
+        w.frameGeometry = {x:contentX,y:area.y,width:area.x+area.width-contentX,height:area.height};
         workspace.windowList().forEach(function (panel) {
             if (String(panel.caption) === 'EdgeLine dashboard') panel.keepAbove = false;
         });
@@ -43,13 +45,15 @@
         print('EdgeLine: fitted ' + w.caption);
     }
     function placePanel(w) {
-        if (!w || !['EdgeLine', 'EdgeLine dashboard'].includes(String(w.caption))) return;
+        if (!w || !['EdgeLine', 'EdgeLine dashboard', 'EdgeLine taskbar'].includes(String(w.caption))) return;
         var outputs = workspace.screens.filter(function (s) {
             return s.geometry.width === 2560 && s.geometry.height === 720;
         });
         if (outputs.length !== 1) return;
         var g = outputs[0].geometry;
-        w.frameGeometry = {x:g.x,y:g.y,width:g.width,height:g.height};
+        var isRail = String(w.caption) === 'EdgeLine taskbar';
+        w.frameGeometry = {x:g.x+(isRail?0:96),y:g.y,width:isRail?96:g.width-96,height:g.height};
+        if (isRail) w.keepAbove = true;
         if (String(w.caption) === 'EdgeLine') {
             workspace.windowList().forEach(function (panel) {
                 if (String(panel.caption) === 'EdgeLine dashboard') panel.keepAbove = false;
@@ -57,6 +61,14 @@
             w.keepAbove = true;
         }
     }
+    workspace.windowActivated.connect(function () {
+        workspace.windowList().forEach(function (w) {
+            if (String(w.caption) === 'EdgeLine taskbar') {
+                w.keepAbove = true;
+                if (workspace.raiseWindow) workspace.raiseWindow(w);
+            }
+        });
+    });
     workspace.windowAdded.connect(placePanel);
     workspace.windowList().forEach(placePanel);
     registerShortcut('EdgeLinePanel', 'EdgeLine: place dashboard', '', function () {

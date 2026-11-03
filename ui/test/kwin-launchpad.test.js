@@ -26,14 +26,15 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../kwin-launchpad.js'),
 });
 activated({ normalWindow: true, resourceClass: 'edgeline-ui', caption: 'EdgeLine dashboard' });
 shortcuts.EdgeLineFit();
-assert.equal(target.frameGeometry.width, 2560);
+assert.equal(target.frameGeometry.width, 2464);
+assert.equal(target.frameGeometry.x, screen.geometry.x + 96);
 assert.equal(target.fullScreen, false);
 shortcuts.EdgeLineFit(); // repeated fit must not overwrite saved original geometry
 shortcuts.EdgeLineRestore();
 checkOriginal();
 assert.equal(target.fullScreen, true);
 shortcuts.EdgeLinePick();
-assert.equal(target.frameGeometry.width, 2560);
+assert.equal(target.frameGeometry.width, 2464);
 shortcuts.EdgeLineRestore();
 workspace.screens = [];
 shortcuts.EdgeLineFit();
@@ -49,7 +50,7 @@ target.caption = 'EdgeLine';
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../kwin-launchpad.js'), 'utf8'), {
   workspace, KWin: { MaximizeArea: 1 }, print() {}, registerShortcut() {}, callDBus() {},
 });
-assert.equal(target.frameGeometry.x, screen.geometry.x);
-assert.equal(target.frameGeometry.width, 2560);
+assert.equal(target.frameGeometry.x, screen.geometry.x + 96);
+assert.equal(target.frameGeometry.width, 2464);
 assert.equal(target.frameGeometry.height, 720);
 console.log('kwin-launchpad: fit, restore, picker, output guards and Edge-only control placement pass');
