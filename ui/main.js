@@ -28,6 +28,9 @@ const tabletDeck = require('./tablet-deck');
 const workarea = require('./workarea');
 const apps = require('./apps/registry');
 const diagnostics = require('./diagnostics');
+const media = require('./host/media');
+const telemetry = require('./host/telemetry');
+const clipboard = require('./host/clipboard');
 ipcMain.handle('tablet-deck-open', () => tabletDeck.open());
 ipcMain.handle('edge-windows', () => windowOverview.snapshot());
 ipcMain.handle('edge-taskbar-action', (_event, action) => {
@@ -800,7 +803,11 @@ async function openApp(id) {
   window.once('ready-to-show', () => {
     window.show();
     // Size comes from the manifest; position has to come from the compositor.
-    placeAppWindow(app).catch((error) => console.error('[apps]', app.id, error.message));
+    // A toplevel can map after its page is ready, so one late retry covers the
+    // first-open race. The placement script is idempotent when already right.
+    const place = () => placeAppWindow(app).catch((error) => console.error('[apps]', app.id, error.message));
+    place();
+    setTimeout(place, 1500).unref();
   });
   window.on('closed', () => {
     appWindows.delete(window.webContents.id);
@@ -868,13 +875,36 @@ ipcMain.handle('app-window-info', (event) => {
   const app = appWindows.get(event.sender.id);
   return app ? { id: app.id, name: app.name, capabilities: app.capabilities } : null;
 });
-ipcMain.handle('app-call', async (event, method) => {
+// One table from method to handler. A method in the registry without an entry
+// here is a programming error, and the app gets a typed refusal, not a crash.
+const APP_METHODS = {
+  'diagnostics.read': () => collectDiagnostics(),
+  'media.nowPlaying': () => media.nowPlaying(),
+  'media.command': (args) => media.command(String(args && args.action || '')),
+  'system.telemetry': () => telemetry.collect(),
+  'clipboard.read': () => clipboard.history(),
+  'clipboard.write': (args) => clipboard.copy(String(args && args.text || '')),
+  'windows.list': () => windowOverview.snapshot(),
+  'windows.activate': (args) => windowOverview.activate(String(args && args.id || '')),
+  'notify.show': (args) => {
+    const title = String((args && args.title) || 'EdgeLine').slice(0, 80);
+    const body = String((args && args.body) || '').slice(0, 400);
+    if (!Notification.isSupported()) return { shown: false };
+    new Notification({ title, body, silent: !!(args && args.silent) }).show();
+    return { shown: true };
+  },
+};
+
+ipcMain.handle('app-call', async (event, method, args) => {
   const app = appWindows.get(event.sender.id);
   if (!app) throw new Error('Not an app window');
   const allowed = apps.authorize(app, method);
   if (!allowed.ok) throw new Error(allowed.error);
-  if (method === 'diagnostics.read') return collectDiagnostics();
-  throw new Error(`${method} has no handler`);
+  const handler = APP_METHODS[method];
+  if (!handler) throw new Error(`${method} has no handler in this build`);
+  const result = await handler(args && typeof args === 'object' ? args : {});
+  // Apps get plain data only; a stray class instance would not survive IPC.
+  return JSON.parse(JSON.stringify(result === undefined ? null : result));
 });
 
 function buildTrayMenu() {

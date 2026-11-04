@@ -67,13 +67,15 @@ with all 26 host methods in an app window.
 | Capability | Methods | Status |
 | --- | --- | --- |
 | `diagnostics:read` | `diagnostics.read` | implemented |
-| `windows:list` | `windows.list` | reserved |
-| `windows:activate` | `windows.activate` | reserved |
+| `windows:list` | `windows.list` | implemented |
+| `windows:activate` | `windows.activate` | implemented |
 | `windows:fit` | `windows.fit`, `windows.restore` | reserved |
-| `media:playback` | `media.nowPlaying`, `media.command` | reserved |
-| `system:telemetry` | `system.telemetry` | reserved |
+| `media:playback` | `media.nowPlaying`, `media.command` | implemented |
+| `system:telemetry` | `system.telemetry` | implemented |
+| `clipboard:read` | `clipboard.read` | implemented |
+| `clipboard:write` | `clipboard.write` | implemented |
 | `display:control` | `display.ddcGet`, `display.ddcSet` | reserved |
-| `notify` | `notify.show` | reserved |
+| `notify` | `notify.show` | implemented |
 
 Reserved means the contract names the method and the owning capability, but the
 core does not answer it yet. An app that calls one gets a typed refusal, not an
@@ -103,6 +105,16 @@ electron . --open-app=edge-doctor
 
 `EDGELINE_OPEN_APP=<id>` does the same on startup, which is what the local
 preview used while building the first app.
+
+## Built-in apps
+
+| App | Capabilities | What it does |
+| --- | --- | --- |
+| `edge-doctor` | `diagnostics:read` | work area, sidebar frame, controller and helper state |
+| `now-playing` | `media:playback` | MPRIS artwork, transport controls, progress |
+| `system-monitor` | `system:telemetry` | hwmon temperatures, fans, load, memory, NVIDIA/AMD GPUs |
+| `clipboard` | `clipboard:read`, `clipboard:write` | Klipper history as touch targets |
+| `ambient` | `media:playback` | clock and now-playing strip for an idle panel |
 
 ## Isolation
 

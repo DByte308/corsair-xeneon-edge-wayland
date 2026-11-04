@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost">
+<title>Ambient</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <div class="clock">
+    <p id="time">--:--</p>
+    <p id="date" class="date"></p>
+  </div>
+  <div class="music">
+    <div id="art" class="art"></div>
+    <div class="text">
+      <p id="state" class="state">Nothing playing</p>
+      <p id="track" class="track"></p>
+      <p id="by" class="by"></p>
+    </div>
+  </div>
+</main>
+<footer>
+  <span>EdgeLine</span>
+  <button id="close" type="button">Close</button>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>

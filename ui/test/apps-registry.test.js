@@ -31,10 +31,12 @@ assert.equal(builtin.compatible, true);
 assert.ok(builtin.capabilities.includes('diagnostics:read'));
 
 // User apps are discovered too, and a same-id user app shadows the builtin.
-assert.deepEqual(registry.list().map((app) => app.id), ['edge-doctor'], 'no user apps yet');
+assert.equal(registry.list().some((app) => app.source === 'user'), false, 'no user apps yet');
+const builtinIds = registry.list().filter((app) => app.source === 'builtin').map((app) => app.id);
 const userRoot = registry.userDirectory();
 writeApp(userRoot, 'probe', good);
-assert.deepEqual(registry.list().map((app) => app.id).sort(), ['edge-doctor', 'probe']);
+assert.ok(registry.list().some((app) => app.id === 'probe'), 'a dropped-in app is discovered');
+assert.deepEqual(registry.list().filter((app) => app.source === 'builtin').map((app) => app.id).sort(), builtinIds.sort());
 const shadow = writeApp(userRoot, 'edge-doctor', { ...good, id: 'edge-doctor', name: 'Shadow doctor' });
 assert.equal(registry.list().find((app) => app.id === 'edge-doctor').name, 'Shadow doctor', 'a user app shadows the builtin');
 assert.equal(registry.list().find((app) => app.id === 'edge-doctor').source, 'user');

@@ -13,6 +13,7 @@ const ID = /^[a-z0-9][a-z0-9-]{1,40}$/;
 const CAPABILITIES = new Set([
   'diagnostics:read', 'windows:list', 'windows:activate', 'windows:fit',
   'media:playback', 'system:telemetry', 'display:control', 'notify',
+  'clipboard:read', 'clipboard:write',
 ]);
 const METHODS = {
   'diagnostics.read': 'diagnostics:read',
@@ -26,8 +27,17 @@ const METHODS = {
   'display.ddcGet': 'display:control',
   'display.ddcSet': 'display:control',
   'notify.show': 'notify',
+  'clipboard.read': 'clipboard:read',
+  'clipboard.write': 'clipboard:write',
 };
-const IMPLEMENTED = new Set(['diagnostics.read']);
+const IMPLEMENTED = new Set([
+  'diagnostics.read',
+  'media.nowPlaying', 'media.command',
+  'system.telemetry',
+  'clipboard.read', 'clipboard.write',
+  'notify.show',
+  'windows.list', 'windows.activate',
+]);
 
 function builtinDirectory() { return path.join(__dirname, 'builtin'); }
 function userDirectory() {

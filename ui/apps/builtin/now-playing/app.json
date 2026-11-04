@@ -1,0 +1,10 @@
+{
+  "id": "now-playing",
+  "apiVersion": 1,
+  "name": "Now Playing",
+  "description": "Album art, transport controls and progress for whatever is playing on this desktop.",
+  "entry": "index.html",
+  "capabilities": ["media:playback"],
+  "window": { "width": 1000, "height": 620 },
+  "network": []
+}

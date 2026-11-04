@@ -1,0 +1,10 @@
+{
+  "id": "ambient",
+  "apiVersion": 1,
+  "name": "Ambient",
+  "description": "A clock and now-playing strip for an idle Edge panel.",
+  "entry": "index.html",
+  "capabilities": ["media:playback"],
+  "window": { "width": 1400, "height": 680 },
+  "network": []
+}

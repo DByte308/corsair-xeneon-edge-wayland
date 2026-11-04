@@ -1,0 +1,10 @@
+{
+  "id": "clipboard",
+  "apiVersion": 1,
+  "name": "Clipboard",
+  "description": "Klipper's clipboard history as touch targets: tap an entry to put it back on the clipboard.",
+  "entry": "index.html",
+  "capabilities": ["clipboard:read", "clipboard:write"],
+  "window": { "width": 1000, "height": 640 },
+  "network": []
+}

@@ -1,0 +1,31 @@
+{
+  "type": "a{sv}",
+  "data": {
+    "mpris:artUrl": {
+      "type": "s",
+      "data": "file:///tmp/..com.vivaldi.Vivaldi.JuYPaA"
+    },
+    "mpris:length": {
+      "type": "x",
+      "data": 59061000
+    },
+    "mpris:trackid": {
+      "type": "o",
+      "data": "/org/chromium/MediaPlayer2/TrackList/TrackF62DE4B3B64C165817838C0863FA4A7C"
+    },
+    "xesam:album": {
+      "type": "s",
+      "data": ""
+    },
+    "xesam:artist": {
+      "type": "as",
+      "data": [
+        "Royalix"
+      ]
+    },
+    "xesam:title": {
+      "type": "s",
+      "data": "🛡️ Generations Under One Guardian"
+    }
+  }
+}

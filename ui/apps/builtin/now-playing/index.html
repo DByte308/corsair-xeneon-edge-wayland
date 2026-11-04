@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost">
+<title>Now Playing</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Now Playing</h1>
+  <div class="actions">
+    <button id="refresh" type="button">Refresh</button>
+    <button id="close" type="button" class="ghost">Close</button>
+  </div>
+</header>
+<main id="body">
+  <div id="art" class="art"><span class="note">♪</span></div>
+  <section class="meta">
+    <p id="player" class="player">Connecting…</p>
+    <h2 id="title">Nothing playing</h2>
+    <p id="artist" class="artist"></p>
+    <p id="album" class="album"></p>
+    <div class="progress" aria-hidden="true"><div id="bar"></div></div>
+    <div class="times"><span id="position">0:00</span><span id="length">0:00</span></div>
+  </section>
+</main>
+<footer class="controls">
+  <button id="previous" type="button" aria-label="Previous track">⏮</button>
+  <button id="playpause" type="button" class="primary" aria-label="Play or pause">⏯</button>
+  <button id="next" type="button" aria-label="Next track">⏭</button>
+</footer>
+<div id="toast" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>
