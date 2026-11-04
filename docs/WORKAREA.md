@@ -46,10 +46,13 @@ started at output x+96. Independent read-only review also checked the fix.
 KWin keeps a loaded script until it is unloaded or the compositor restarts. The
 controller's plugin name is versioned by its own content, so every rebuild used
 to leave the previous copy running: four copies had accumulated, including the
-old rail offset. `ui/launchpad.js` now records the names it loads in
+old rail offset. `ui/launchpad.js` now records the controller it loaded in
 `$XDG_RUNTIME_DIR/edgeline-kwin-controllers.json` and unloads every other
 recorded name before loading the current one, so a rebuild replaces the
-controller instead of stacking another one on top of it.
+controller instead of stacking another one on top of it. The cleanup also runs
+when the current controller is already loaded, which is the crash-restart case.
+Names in an older format are still unloaded, and concurrent callers share one
+load instead of racing two.
 
 ## Scope
 

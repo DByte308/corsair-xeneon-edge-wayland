@@ -13,9 +13,8 @@ launchpad.recordController('edgeline-launchpad-aaaaaaaaaaaa');
 launchpad.recordController('edgeline-launchpad-aaaaaaaaaaaa');
 assert.deepEqual(launchpad.recordedControllers(), ['edgeline-launchpad-aaaaaaaaaaaa'], 'recording the same controller is idempotent');
 launchpad.recordController('edgeline-launchpad-bbbbbbbbbbbb');
-assert.deepEqual(launchpad.recordedControllers(),
-  ['edgeline-launchpad-bbbbbbbbbbbb', 'edgeline-launchpad-aaaaaaaaaaaa'],
-  'every loaded controller stays recorded so it can be unloaded later');
+assert.deepEqual(launchpad.recordedControllers(), ['edgeline-launchpad-bbbbbbbbbbbb'],
+  'only the controller that replaced the record stays recorded');
 assert.deepEqual(launchpad.staleControllerNames(
   ['edgeline-launchpad-bbbbbbbbbbbb', 'edgeline-launchpad-aaaaaaaaaaaa'], 'edgeline-launchpad-bbbbbbbbbbbb'),
   ['edgeline-launchpad-aaaaaaaaaaaa'], 'only the current controller survives cleanup');
@@ -25,6 +24,13 @@ assert.deepEqual(launchpad.staleControllerNames(
 assert.deepEqual(launchpad.staleControllerNames(
   ['not-a-controller', '../evil', ''], 'edgeline-launchpad-bbbbbbbbbbbb'), [],
   'tampered entries never reach the compositor call');
+assert.deepEqual(launchpad.staleControllerNames(
+  ['edgeline-launchpad-oldformat', 'edgeline-launchpad-0123456789abcdef'], 'edgeline-launchpad-bbbbbbbbbbbb'),
+  ['edgeline-launchpad-oldformat', 'edgeline-launchpad-0123456789abcdef'],
+  'an older name format is still unloaded even though it is never recorded');
+launchpad.recordController('edgeline-launchpad-oldformat');
+assert.deepEqual(launchpad.recordedControllers(), ['edgeline-launchpad-bbbbbbbbbbbb'],
+  'off-format names are not recorded');
 fs.writeFileSync(launchpad.controllerStatePath, '{not json');
 assert.deepEqual(launchpad.recordedControllers(), [], 'a corrupt record degrades to no cleanup');
 launchpad.recordController('edgeline-launchpad-cccccccccccc');

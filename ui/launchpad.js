@@ -38,9 +38,13 @@ const plugin = `edgeline-launchpad-${controllerVersion}`;
 // over the same windows.
 const controllerStatePath = path.join(
   process.env.XDG_RUNTIME_DIR || os.tmpdir(), 'edgeline-kwin-controllers.json');
+// Recording demands the current name format. Unloading accepts any earlier
+// format too, so a future naming change cannot strand an old controller.
+const CONTROLLER_NAME = /^edgeline-launchpad-[0-9a-f]{12}$/;
+const CONTROLLER_PREFIX = /^edgeline-launchpad-[a-z0-9]{4,}$/i;
 function staleControllerNames(recorded, current) {
   return [...new Set(recorded)]
-    .filter((name) => /^edgeline-launchpad-[0-9a-f]{12}$/.test(name) && name !== current);
+    .filter((name) => CONTROLLER_PREFIX.test(name) && name !== current);
 }
 function recordedControllers() {
   try {
@@ -49,28 +53,40 @@ function recordedControllers() {
   } catch { return []; }
 }
 function recordController(name) {
-  const keep = [name, ...recordedControllers().filter((entry) => entry !== name)];
-  try { fs.writeFileSync(controllerStatePath, JSON.stringify(keep), { mode: 0o600 }); }
+  if (!CONTROLLER_NAME.test(name)) return;
+  // Only this controller remains loaded: everything else recorded was just
+  // unloaded, so a merged list would grow without bound.
+  try { fs.writeFileSync(controllerStatePath, JSON.stringify([name]), { mode: 0o600 }); }
   catch { /* the controller is live either way; recording is best effort */ }
 }
 async function dbus(...args) {
   const { stdout } = await run('busctl', ['--user', 'call', ...args], { timeout: 5000 });
   return stdout.trim();
 }
-async function ensureController() {
-  const loaded = await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'isScriptLoaded', 's', plugin);
-  if (loaded === 'b true') { recordController(plugin); return; }
-  for (const stale of recordedControllers()) {
+async function loadController() {
+  // Also runs when this controller is already loaded: a crash restart with an
+  // older controller still recorded must clear it, not just re-record itself.
+  for (const stale of recordedControllers().filter((name) => name !== plugin)) {
     try {
       await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'unloadScript', 's', stale);
     } catch { /* an already-gone controller needs no cleanup */ }
   }
+  const loaded = await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'isScriptLoaded', 's', plugin);
+  if (loaded === 'b true') { recordController(plugin); return; }
   const answer = await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'loadScript', 'ss',
     scriptPath('kwin-launchpad.js'), plugin);
   const match = /^i (\d+)$/.exec(answer);
   if (!match) throw new Error('KWin refused the launchpad controller');
   await dbus('org.kde.KWin', `/Scripting/Script${match[1]}`, 'org.kde.kwin.Script', 'run');
   recordController(plugin);
+}
+let controllerLoad = null;
+function ensureController() {
+  // Concurrent callers share one load instead of racing two loadScript calls.
+  if (!controllerLoad) {
+    controllerLoad = loadController().finally(() => { controllerLoad = null; });
+  }
+  return controllerLoad;
 }
 function localGameArtwork() {
   const roots = [path.join(os.homedir(), '.local/share/Steam'), path.join(os.homedir(), '.steam/steam')];
