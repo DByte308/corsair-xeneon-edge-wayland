@@ -19,7 +19,11 @@ assert.ok(theme.includes('z-index: 0'), 'sky sits behind content');
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 assert.match(main, /app-theme\.css/, 'the host reads the theme file');
 assert.match(main, /insertCSS/, 'the host injects it into app windows');
-assert.match(main, /applyAppTheme\(window\);/, 'every opened app window goes through it');
+assert.match(main, /applyAppTheme\(window, app\.id\);/, 'every opened app window goes through it');
+// insertCSS before the first frame exists fails, so it must run after load.
+const loadIndex = main.indexOf("on('did-finish-load'");
+const themeIndex = main.indexOf('applyAppTheme(window, app.id)');
+assert.ok(loadIndex > 0 && themeIndex > loadIndex, 'the theme is injected after the document loads, not at window creation');
 assert.match(main, /render-process-gone/, 'a crashed app renderer is logged and closed');
 assert.match(main, /LOG_FILE/, 'crash-relevant logs also go to a file, because main-process stdout stops reaching journald');
 assert.match(main, /uncaughtException/, 'an uncaught error is logged instead of vanishing');
