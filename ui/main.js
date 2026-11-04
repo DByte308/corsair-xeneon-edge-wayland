@@ -691,12 +691,19 @@ function appSession(app) {
 // same preload and the same capabilities.
 function lockAppNavigation(window, app) {
   const webContents = window.webContents;
+  // app.entry is already a realpath; compare against the resolved directory so
+  // an app installed behind a symlinked folder is not denied its own files.
+  let directory = app.directory;
+  try { directory = fs.realpathSync(app.directory); } catch { /* keep the declared path */ }
   const allowed = (target) => {
     try {
       const url = new URL(target);
       if (url.protocol !== 'file:') return false;
       const path = decodeURIComponent(url.pathname);
-      return path.startsWith(app.directory + '/') || path === app.entry;
+      // Main frame only. Sub-frames get neither the preload nor the bridge,
+      // so they cannot call host methods; do not widen this into an
+      // allow-everything iframe policy.
+      return path.startsWith(directory + '/') || path === app.entry;
     } catch { return false; }
   };
   webContents.on('will-navigate', (event, target) => { if (!allowed(target)) event.preventDefault(); });
