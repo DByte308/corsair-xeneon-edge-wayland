@@ -34,7 +34,9 @@ not receive the adapter; explicit Tauri permissions allow only the local main,
 dashboard and taskbar windows to invoke the host.
 
 Implemented in Rust: window/tray management, separate taskbar/dashboard/control
-windows, preference persistence, autostart handling, backend socket transport,
+windows, a transparent Wayland exclusive-zone helper that reserves the sidebar
+for ordinary app placement/maximization (see [WORKAREA.md](WORKAREA.md)),
+preference persistence, autostart handling, backend socket transport,
 agent event forwarding, and the local no-key Tablet Deck child-process lifecycle.
 The hardware agent remains C++ for now. Tablet Deck itself remains its separate
 Node application, deliberately in dry-run mode.

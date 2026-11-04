@@ -25,6 +25,7 @@ const rustBackendEnabled = process.env.EDGELINE_BACKEND === 'rust';
 const launchpad = rustBackendEnabled ? require('./rust-services').launchpad : require('./launchpad');
 const windowOverview = rustBackendEnabled ? require('./rust-services').windowOverview : require('./window-overview');
 const tabletDeck = require('./tablet-deck');
+const workarea = require('./workarea');
 ipcMain.handle('tablet-deck-open', () => tabletDeck.open());
 ipcMain.handle('edge-windows', () => windowOverview.snapshot());
 ipcMain.handle('edge-taskbar-action', (_event, action) => {
@@ -938,6 +939,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    workarea.start();
     connect();
     // Nothing is listening on a fresh machine, so bring the agent up rather
     // than showing a window that can do nothing.
@@ -983,7 +985,7 @@ if (!app.requestSingleInstanceLock()) {
 
   // Not app.quit(): with a tray the app deliberately outlives its windows.
   app.on('window-all-closed', () => { if (!tray) app.quit(); });
-  app.on('before-quit', () => { quitting = true; windowOverview.stop(); tabletDeck.stop(); });
+  app.on('before-quit', () => { quitting = true; windowOverview.stop(); tabletDeck.stop(); workarea.stop(); });
   app.on('before-quit', () => {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     if (sock) sock.destroy();

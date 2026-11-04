@@ -53,4 +53,14 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../kwin-launchpad.js'),
 assert.equal(target.frameGeometry.x, screen.geometry.x + 96);
 assert.equal(target.frameGeometry.width, 2464);
 assert.equal(target.frameGeometry.height, 720);
-console.log('kwin-launchpad: fit, restore, picker, output guards and Edge-only control placement pass');
+// Once layer-shell reserves the rail, fit must not subtract its width twice.
+target.caption='Game';
+workspace.clientArea=()=>({...screen.geometry,x:screen.geometry.x+96,width:screen.geometry.width-96});
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../kwin-launchpad.js'),'utf8'),{
+  workspace,KWin:{MaximizeArea:1},print(){},
+  registerShortcut(id,_label,_keys,callback){shortcuts[id]=callback;},callDBus(){},
+});
+shortcuts.EdgeLineFit();
+assert.equal(target.frameGeometry.x,screen.geometry.x+96);
+assert.equal(target.frameGeometry.width,2464);
+console.log('kwin-launchpad: fit, restore, picker, output guards, Edge-only placement and no double reservation pass');

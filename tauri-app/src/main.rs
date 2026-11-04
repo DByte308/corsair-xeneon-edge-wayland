@@ -181,6 +181,26 @@ impl Host {
             }
         }
         self.core("controller.ensure", json!({})).await?;
+        self.start_workarea(app)?;
+        Ok(())
+    }
+    fn start_workarea(&self, app: &AppHandle) -> Result<()> {
+        if self.smoke {
+            return Ok(());
+        }
+        let bundled = app.path().resource_dir()?.join("backend/edgeline-reserve");
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../rust-backend/target/release/edgeline-reserve");
+        let binary = std::env::var_os("EDGELINE_WORKAREA_HELPER")
+            .map(PathBuf::from)
+            .unwrap_or(if bundled.exists() { bundled } else { source });
+        let child = Command::new(binary)
+            .args(["--parent-pid", &std::process::id().to_string(), "--wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()?;
+        self.children.lock().unwrap().push(child);
         Ok(())
     }
     fn ensure_agent(&self, app: &AppHandle) -> Result<()> {
