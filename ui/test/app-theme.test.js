@@ -21,4 +21,6 @@ assert.match(main, /app-theme\.css/, 'the host reads the theme file');
 assert.match(main, /insertCSS/, 'the host injects it into app windows');
 assert.match(main, /applyAppTheme\(window\);/, 'every opened app window goes through it');
 assert.match(main, /render-process-gone/, 'a crashed app renderer is logged and closed');
+assert.match(main, /LOG_FILE/, 'crash-relevant logs also go to a file, because main-process stdout stops reaching journald');
+assert.match(main, /uncaughtException/, 'an uncaught error is logged instead of vanishing');
 console.log('app-theme: no remote assets, sky layers, content lift, reduced motion and host wiring pass');

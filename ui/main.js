@@ -75,6 +75,24 @@ const RPC_TIMEOUT_MS = 8000;
 const RECONNECT_MS = 1500;
 const MAX_AUTO_RESTARTS = 3;
 
+// Main-process stdout does not reliably reach journald once Electron has
+// started (writes silently vanish), so anything that matters for diagnosing a
+// crash also goes to a small rotating file.
+const STATE_DIR = process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+const LOG_FILE = path.join(STATE_DIR, 'edgeline', 'edgeline.log');
+const LOG_LIMIT = 2 * 1024 * 1024;
+function logLine(...parts) {
+  const text = parts.map((part) => (typeof part === 'string' ? part : JSON.stringify(part))).join(' ');
+  try {
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true, mode: 0o700 });
+    const stat = fs.statSync(LOG_FILE, { throwIfNoEntry: false });
+    if (stat && stat.size > LOG_LIMIT) fs.renameSync(LOG_FILE, `${LOG_FILE}.1`);
+    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${text}\n`, { mode: 0o600 });
+  } catch { /* logging must never be the reason the app stops */ }
+  console.log(text);
+}
+logLine('[app] starting', app.getVersion());
+
 const EDGE_TASKBAR_WIDTH = 96;
 // KWin window ids are UUIDs; anything else is not a window we may touch.
 const uuidPattern = /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
@@ -678,12 +696,16 @@ const APP_THEME = path.join(__dirname, 'apps', 'app-theme.css');
 // Every app window gets the same sky behind whatever the app draws. Injected
 // rather than imported so an app bundle stays one directory and cannot
 // accidentally point at a file it does not own.
-function applyAppTheme(window) {
+// Must run after the document exists: insertCSS before the first frame is
+// disposed fails with "Render frame was disposed", which is how the theme ended
+// up never being applied at all.
+async function applyAppTheme(window, id) {
   try {
-    window.webContents.insertCSS(fs.readFileSync(APP_THEME, 'utf8'))
-      .catch((error) => console.error('[apps] theme', error.message));
+    const css = fs.readFileSync(APP_THEME, 'utf8');
+    await window.webContents.insertCSS(css);
+    logLine('[apps] theme applied', id);
   } catch (error) {
-    console.error('[apps] theme', error.message);
+    logLine('[apps] theme failed', id, error.message);
   }
 }
 
@@ -860,36 +882,45 @@ async function openApp(id) {
   });
   window.removeMenu();
   lockAppNavigation(window, app);
-  applyAppTheme(window);
   // A crashed renderer used to leave a blank window that never recovered.
   // Close it so the next open creates a fresh one, and say why in the log.
   window.webContents.on('render-process-gone', (_event, details) => {
-    console.error(`[apps] ${app.id} renderer gone: ${details.reason} (exit ${details.exitCode})`);
+    logLine(`[apps] ${app.id} renderer gone: ${details.reason} (exit ${details.exitCode})`);
     if (!window.isDestroyed()) window.destroy();
   });
-  window.on('unresponsive', () => console.error(`[apps] ${app.id} window unresponsive`));
-  window.webContents.on('did-finish-load', () => console.log(`[apps] opened ${app.id}`));
+  window.on('unresponsive', () => logLine(`[apps] ${app.id} window unresponsive`));
+  window.webContents.on('did-finish-load', () => {
+    logLine(`[apps] opened ${app.id}`);
+    applyAppTheme(window, app.id);
+  });
+  window.webContents.on('did-fail-load', (_event, code, description) =>
+    logLine(`[apps] ${app.id} failed to load ${code}: ${description}`));
   window.webContents.on('console-message', (_event, level, message, line, source) => {
     if (level >= 2) console.error(`[app:${app.id}] ${source}:${line} ${message}`);
     else console.log(`[app:${app.id}] ${message}`);
   });
-  appWindows.set(window.webContents.id, app);
+  // Capture the id now: reading window.webContents after the window is gone
+  // throws "Object has been destroyed", which used to be an uncaught error in
+  // the main process every time an app window was closed.
+  const webContentsId = window.webContents.id;
+  appWindows.set(webContentsId, app);
   appWindowsById.set(app.id, window);
   window.once('ready-to-show', () => {
     window.show();
     // Size comes from the manifest; position has to come from the compositor.
     // A toplevel can map after its page is ready, so one late retry covers the
     // first-open race. The placement script is idempotent when already right.
-    const place = () => placeAppWindow(app).catch((error) => console.error('[apps]', app.id, error.message));
+    const place = () => placeAppWindow(app).catch((error) => logLine('[apps]', app.id, error.message));
     place();
     setTimeout(place, 1500).unref();
   });
   window.on('closed', () => {
-    appWindows.delete(window.webContents.id);
+    appWindows.delete(webContentsId);
     if (appWindowsById.get(app.id) === window) appWindowsById.delete(app.id);
+    logLine(`[apps] closed ${app.id}`);
   });
   window.loadFile(app.entry).catch((error) => {
-    console.error('[apps]', app.id, error.message);
+    logLine('[apps]', app.id, error.message);
     window.destroy();
   });
   return { id: app.id, opened: true, reused: false };
@@ -1297,11 +1328,18 @@ ipcMain.handle('app-info', () => ({
 
 // ---------------------------------------------------------------- lifecycle
 
+process.on('uncaughtException', (error) => {
+  logLine('[app] uncaught', error && error.stack ? error.stack : String(error));
+});
+process.on('unhandledRejection', (reason) => {
+  logLine('[app] unhandled rejection', reason && reason.stack ? reason.stack : String(reason));
+});
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
-    console.log('[apps] second instance', JSON.stringify(argv));
+    logLine('[apps] second instance', JSON.stringify(argv));
     // A second launch is only a request to the running instance. That keeps
     // the single-owner rule (one work area, one rail) while still making
     // `electron . --open-app=edge-doctor` usable from a terminal.
