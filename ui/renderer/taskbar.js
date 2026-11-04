@@ -108,6 +108,10 @@ document.getElementById('home').onclick=async()=>{
   await api.dashboardLayout({page:'launchpad'});
   await api.edgeTaskbarAction('home');
 };
+document.getElementById('apps-button').onclick=async()=>{
+  try { await api.edgeTaskbarAction('apps'); }
+  catch (error) { document.getElementById('connection').textContent=error.message; }
+};
 document.getElementById('deck').onclick=async()=>{
   await api.dashboardLayout({page:'tablet-deck'});
   await api.edgeTaskbarAction('home');

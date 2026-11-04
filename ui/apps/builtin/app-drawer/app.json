@@ -1,0 +1,11 @@
+{
+  "id": "app-drawer",
+  "apiVersion": 1,
+  "name": "Apps",
+  "description": "Every EdgeLine app in one place.",
+  "entry": "index.html",
+  "capabilities": ["apps:launch"],
+  "icon": "grid",
+  "window": { "width": 1560, "height": 660 },
+  "network": []
+}

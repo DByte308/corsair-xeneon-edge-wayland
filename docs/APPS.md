@@ -77,6 +77,7 @@ with all 26 host methods in an app window.
 | `system:telemetry` | `system.telemetry` | implemented |
 | `clipboard:read` | `clipboard.read` | implemented |
 | `clipboard:write` | `clipboard.write` | implemented |
+| `apps:launch` | `apps.list`, `apps.launch` | implemented |
 | `display:control` | `display.ddcGet`, `display.ddcSet` | reserved |
 | `notify` | `notify.show` | implemented |
 
@@ -113,6 +114,7 @@ preview used while building the first app.
 
 | App | Capabilities | What it does |
 | --- | --- | --- |
+| `app-drawer` | `apps:launch` | every installed app as a tile; tap to open or switch |
 | `edge-doctor` | `diagnostics:read` | work area, sidebar frame, controller and helper state |
 | `now-playing` | `media:playback` | MPRIS artwork, transport controls, progress |
 | `system-monitor` | `system:telemetry` | hwmon temperatures, fans, load, memory, NVIDIA/AMD GPUs |

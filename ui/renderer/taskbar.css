@@ -2,13 +2,13 @@
 * { box-sizing:border-box; }
 html,body { margin:0; width:100%; height:100%; overflow:hidden; color:#d9eafa; background:#09131e; font:12px Plex,system-ui,sans-serif; }
 nav { height:100%; padding:10px 7px; display:flex; flex-direction:column; gap:8px; border-right:1px solid #426780; background:linear-gradient(180deg,#16283b,#09131e 70%); }
-button { width:100%; min-height:66px; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:5px; flex:none; color:inherit; background:transparent; border:1px solid transparent; border-radius:15px; font:inherit; cursor:pointer; touch-action:manipulation; }
+button { width:100%; min-height:60px; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:5px; flex:none; color:inherit; background:transparent; border:1px solid transparent; border-radius:15px; font:inherit; cursor:pointer; touch-action:manipulation; }
 button:hover { background:#ffffff0a; border-color:#74c6ef55; }
 button:active { background:#6cd3ff30; }
 button:focus-visible { outline:2px solid #96e0ff; outline-offset:-3px; }
 button[aria-pressed="true"] { background:#79dfff18; border-color:#79dfff70; box-shadow:inset 3px 0 #87e4ff; }
 button:disabled { opacity:.5; cursor:wait; }
-.home-icon,.settings-icon { font-size:32px; line-height:36px; color:#a5e3ff; }
+.home-icon,.settings-icon,.apps-icon,.deck-icon { font-size:30px; line-height:36px; color:#a5e3ff; }
 .divider { height:1px; background:#ffffff12; margin:0 10px; flex:none; }
 #apps { display:flex; flex-direction:column; gap:6px; flex:1; min-height:0; overflow-y:auto; scrollbar-width:none; }
 .app-avatar { width:46px; height:42px; display:grid; place-items:center; overflow:hidden; border-radius:12px; border:1px solid #ffffff26; background:linear-gradient(140deg,#225d82,#1c2b44); color:#ccefff; font-size:18px; font-weight:600; }

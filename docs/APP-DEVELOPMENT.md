@@ -20,6 +20,9 @@ That has consequences:
   the dashboard and the settings window, which the rail deliberately hides.
 - **One window per app.** `openApp` reuses the existing window. Do not open
   additional top-level windows from your page; they are denied.
+- **Your manifest is your drawer entry.** The Apps app lists every installed,
+  enabled app from `app.json`: name, description, icon. Nothing to register, and
+  a disable in `~/.config/edgeline/apps.json` removes the tile.
 - **Minimized is visible, closed is gone.** The rail dims a minimized tile and
   clicking it restores the window. Anything you were doing in the background
   stops when the window is closed, because the window is destroyed, not hidden.

@@ -13,7 +13,7 @@ const ID = /^[a-z0-9][a-z0-9-]{1,40}$/;
 const CAPABILITIES = new Set([
   'diagnostics:read', 'windows:list', 'windows:activate', 'windows:fit',
   'media:playback', 'system:telemetry', 'display:control', 'notify',
-  'clipboard:read', 'clipboard:write',
+  'clipboard:read', 'clipboard:write', 'apps:launch',
 ]);
 const METHODS = {
   'diagnostics.read': 'diagnostics:read',
@@ -29,6 +29,8 @@ const METHODS = {
   'notify.show': 'notify',
   'clipboard.read': 'clipboard:read',
   'clipboard.write': 'clipboard:write',
+  'apps.list': 'apps:launch',
+  'apps.launch': 'apps:launch',
 };
 // A small curated set, so the rail can draw a crisp themed glyph instead of
 // two letters. An unknown name is ignored rather than refused: an icon is
@@ -44,6 +46,7 @@ const IMPLEMENTED = new Set([
   'clipboard.read', 'clipboard.write',
   'notify.show',
   'windows.list', 'windows.activate',
+  'apps.list', 'apps.launch',
 ]);
 
 function builtinDirectory() { return path.join(__dirname, 'builtin'); }

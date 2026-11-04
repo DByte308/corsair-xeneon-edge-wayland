@@ -42,6 +42,7 @@ ipcMain.handle('edge-taskbar-action', (_event, action) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
     return openDashboardWindow();
   }
+  if (action === 'apps') return openApp('app-drawer');
   if (action === 'settings') { showMainWindow(); return {ok:true}; }
   throw new Error('Unknown taskbar action');
 });
@@ -888,6 +889,14 @@ const APP_METHODS = {
   'system.telemetry': () => telemetry.collect(),
   'clipboard.read': () => clipboard.history(),
   'clipboard.write': (args) => clipboard.copy(String(args && args.text || '')),
+  'apps.list': () => apps.list().filter((app) => app.compatible && app.enabled).map((app) => ({
+    id: app.id, name: app.name, description: app.description, icon: app.icon,
+    capabilities: app.capabilities, open: appWindowsById.has(app.id),
+  })),
+  'apps.launch': async (args) => {
+    const result = await openApp(String(args && args.id || ''));
+    return { opened: result.id, reused: result.reused === true };
+  },
   'windows.list': () => windowOverview.snapshot(),
   'windows.activate': (args) => windowOverview.activate(String(args && args.id || '')),
   'notify.show': (args) => {
