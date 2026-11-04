@@ -135,7 +135,8 @@ function readManifest(directory, folderName) {
     id, apiVersion: parsed.apiVersion, name, description, capabilities,
     directory: path.resolve(directory), entry, network,
     icon: typeof parsed.icon === 'string' && ICONS.has(parsed.icon) ? parsed.icon : null,
-    window: normalizeWindow(parsed.window), rail: parsed.rail === true,
+    // The rail lists every Edge window by default; only a launcher opts out.
+    window: normalizeWindow(parsed.window), rail: parsed.rail !== false,
   } };
 }
 

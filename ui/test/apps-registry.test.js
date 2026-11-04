@@ -115,6 +115,12 @@ granted.capabilities.push('display:control');
 assert.equal(registry.authorize(granted, 'display.ddcSet').ok, false, 'reserved capabilities are refused until implemented');
 assert.match(registry.authorize(granted, 'display.ddcSet').error, /not implemented/);
 
+// The rail shows an app's window by default; only an explicit false opts out.
+assert.equal(registry.readManifest(writeApp(userRoot, 'raildefault', { ...good, id: 'raildefault' }), 'raildefault').app.rail, true);
+assert.equal(registry.readManifest(writeApp(userRoot, 'railoff', { ...good, id: 'railoff', rail: false }), 'railoff').app.rail, false);
+assert.equal(registry.resolve('app-drawer').app.rail, false, 'the launcher opts out');
+assert.equal(registry.resolve('ambient').app.rail, true, 'ordinary apps stay in the rail');
+
 // Icons are cosmetic: a known name is kept, an unknown one is ignored so an app
 // newer than the core still runs with its initials.
 const icons = registry.readManifest(writeApp(userRoot, 'iconned', { ...good, id: 'iconned', icon: 'play' }), 'iconned').app;
