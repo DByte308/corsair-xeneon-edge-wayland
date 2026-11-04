@@ -8,7 +8,13 @@
     var watchedRailWindows = {};
     var railWarnings = {};
     var pinningRail = false;
-    var railClassPattern = /^(edgeline|edgeline-ui|edgeline-desktop|dev\.edgeline\.rust|electron|edge)$/i;
+    var RAIL_WIDTH = 96;
+    // Empty is allowed: a caption can arrive before the class. Generic
+    // 'electron'/'edge' classes are not, so a spoofed title cannot be pinned.
+    function railClassOk(w) {
+        var c = String(w.resourceClass || '');
+        return c === '' || /^(edgeline|edgeline-ui|edgeline-desktop|dev\.edgeline\.rust)$/i.test(c);
+    }
     function eligible(w) {
         return w && w.normalWindow && !/edgeline|electron/i.test(String(w.resourceClass))
             && !/^EdgeLine/.test(String(w.caption));
@@ -40,7 +46,7 @@
         w.fullScreen = false;
         w.setMaximize(false, false);
         var area = workspace.clientArea(KWin.MaximizeArea, outputs[0], workspace.currentDesktop);
-        var railRight = outputs[0].geometry.x + 96;
+        var railRight = outputs[0].geometry.x + RAIL_WIDTH;
         var contentX = Math.max(area.x, railRight);
         w.frameGeometry = {x:contentX,y:area.y,width:area.x+area.width-contentX,height:area.height};
         workspace.windowList().forEach(function (panel) {
@@ -53,7 +59,7 @@
     }
     function ownedRail(w) {
         return w && String(w.caption) === 'EdgeLine taskbar'
-            && railClassPattern.test(String(w.resourceClass));
+            && railClassOk(w) && w.normalWindow !== false;
     }
     function pinRail(w) {
         if (!ownedRail(w) || w.minimized || pinningRail) return;
@@ -74,10 +80,10 @@
             }
             delete railWarnings[String(w.internalId)];
             var current = w.frameGeometry;
-            var width = w.resizeable === false ? current.width : 96;
+            var width = w.resizeable === false ? current.width : RAIL_WIDTH;
             var height = w.resizeable === false ? current.height : g.height;
             var sizeWarning = 'size:' + String(w.internalId);
-            if (w.resizeable === false && (Math.abs(current.width-96)>0.5 || Math.abs(current.height-g.height)>0.5)) {
+            if (w.resizeable === false && (Math.abs(current.width-RAIL_WIDTH)>0.5 || Math.abs(current.height-g.height)>0.5)) {
                 if (!railWarnings[sizeWarning]) print('EdgeLine: taskbar client refuses resizing; pinning its position only');
                 railWarnings[sizeWarning] = true;
             } else { delete railWarnings[sizeWarning]; }
@@ -86,7 +92,7 @@
                 || Math.abs(current.width-width)>0.5 || Math.abs(current.height-height)>0.5) {
                 w.frameGeometry = {x:g.x,y:g.y,width:width,height:height};
             }
-            w.keepAbove = true;
+            if (!w.keepAbove) w.keepAbove = true;
         } finally { pinningRail = false; }
     }
     function watchRail(w) {
@@ -96,7 +102,7 @@
         watchedRailWindows[id] = true;
         // A title/class can arrive after windowAdded. Observers are inert until
         // ownedRail matches; ordinary app and settings windows are never pinned.
-        if (String(w.caption) === 'EdgeLine taskbar' && !railClassPattern.test(String(w.resourceClass))) {
+        if (String(w.caption) === 'EdgeLine taskbar' && !railClassOk(w)) {
             print('EdgeLine: taskbar class is not recognized yet: ' + String(w.resourceClass));
         }
         ['frameGeometryChanged','captionChanged','windowClassChanged','outputChanged','minimizedChanged','fullScreenChanged','maximizedChanged'].forEach(function (name) {
@@ -114,7 +120,16 @@
         });
         if (outputs.length !== 1) return;
         var g = outputs[0].geometry;
-        w.frameGeometry = {x:g.x+96,y:g.y,width:g.width-96,height:g.height};
+        var target = {x:g.x+RAIL_WIDTH,y:g.y,width:g.width-RAIL_WIDTH,height:g.height};
+        var frame = w.frameGeometry;
+        if (w.fullScreen || w.maximizeMode) {
+            w.fullScreen = false;
+            w.setMaximize(false, false);
+        }
+        if (Math.abs(frame.x-target.x)>0.5 || Math.abs(frame.y-target.y)>0.5
+            || Math.abs(frame.width-target.width)>0.5 || Math.abs(frame.height-target.height)>0.5) {
+            w.frameGeometry = target;
+        }
         if (String(w.caption) === 'EdgeLine') {
             workspace.windowList().forEach(function (panel) {
                 if (String(panel.caption) === 'EdgeLine dashboard') panel.keepAbove = false;
@@ -135,9 +150,13 @@
     workspace.windowAdded.connect(watchRail);
     workspace.windowList().forEach(placePanel);
     workspace.windowList().forEach(watchRail);
+    function repinAll() { workspace.windowList().forEach(pinRail); }
     if (workspace.screensChanged && typeof workspace.screensChanged.connect === 'function') {
-        workspace.screensChanged.connect(function () { workspace.windowList().forEach(pinRail); });
+        workspace.screensChanged.connect(repinAll);
     }
+    ['screenAdded','screenRemoved'].forEach(function (name) {
+        if (workspace[name] && typeof workspace[name].connect === 'function') workspace[name].connect(repinAll);
+    });
     registerShortcut('EdgeLinePanel', 'EdgeLine: place dashboard', '', function () {
         workspace.windowList().forEach(placePanel);
     });

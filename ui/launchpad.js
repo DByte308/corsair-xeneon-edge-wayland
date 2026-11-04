@@ -32,18 +32,45 @@ const run = promisify(execFile);
 const ACTIONS = { fit: `${shortcutPrefix}Fit`, restore: `${shortcutPrefix}Restore`, pick: `${shortcutPrefix}Pick`,
   panel: `${shortcutPrefix}Panel`, 'fit-vanguard': `${shortcutPrefix}VanguardFit` };
 const plugin = `edgeline-launchpad-${controllerVersion}`;
+// KWin keeps a loaded script until it is unloaded or the compositor restarts.
+// Every rebuild changes the plugin name, so the names actually loaded are
+// recorded and stale copies are unloaded instead of piling up and fighting
+// over the same windows.
+const controllerStatePath = path.join(
+  process.env.XDG_RUNTIME_DIR || os.tmpdir(), 'edgeline-kwin-controllers.json');
+function staleControllerNames(recorded, current) {
+  return [...new Set(recorded)]
+    .filter((name) => /^edgeline-launchpad-[0-9a-f]{12}$/.test(name) && name !== current);
+}
+function recordedControllers() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(controllerStatePath, 'utf8'));
+    return Array.isArray(parsed) ? staleControllerNames(parsed, null) : [];
+  } catch { return []; }
+}
+function recordController(name) {
+  const keep = [name, ...recordedControllers().filter((entry) => entry !== name)];
+  try { fs.writeFileSync(controllerStatePath, JSON.stringify(keep), { mode: 0o600 }); }
+  catch { /* the controller is live either way; recording is best effort */ }
+}
 async function dbus(...args) {
   const { stdout } = await run('busctl', ['--user', 'call', ...args], { timeout: 5000 });
   return stdout.trim();
 }
 async function ensureController() {
   const loaded = await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'isScriptLoaded', 's', plugin);
-  if (loaded === 'b true') return;
+  if (loaded === 'b true') { recordController(plugin); return; }
+  for (const stale of recordedControllers()) {
+    try {
+      await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'unloadScript', 's', stale);
+    } catch { /* an already-gone controller needs no cleanup */ }
+  }
   const answer = await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'loadScript', 'ss',
     scriptPath('kwin-launchpad.js'), plugin);
   const match = /^i (\d+)$/.exec(answer);
   if (!match) throw new Error('KWin refused the launchpad controller');
   await dbus('org.kde.KWin', `/Scripting/Script${match[1]}`, 'org.kde.kwin.Script', 'run');
+  recordController(plugin);
 }
 function localGameArtwork() {
   const roots = [path.join(os.homedir(), '.local/share/Steam'), path.join(os.homedir(), '.steam/steam')];
@@ -108,4 +135,5 @@ async function action(name, shell) {
   // Shortcut delivery is not proof a game accepted the requested geometry.
   return { message: name === 'pick' ? 'Click the window to fit; Esc cancels' : 'Window request sent to KWin; check the target window' };
 }
-module.exports = { action, ensureController, scriptPath, dbus };
+module.exports = { action, ensureController, scriptPath, dbus, plugin, controllerStatePath,
+  recordedControllers, recordController, staleControllerNames };

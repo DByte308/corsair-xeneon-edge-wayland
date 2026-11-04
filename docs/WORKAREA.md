@@ -41,6 +41,16 @@ Live checks verified both a forced constrain-like displacement and restarting
 the reservation helper: the bar stayed at output x, while usable app space
 started at output x+96. Independent read-only review also checked the fix.
 
+## One live controller
+
+KWin keeps a loaded script until it is unloaded or the compositor restarts. The
+controller's plugin name is versioned by its own content, so every rebuild used
+to leave the previous copy running: four copies had accumulated, including the
+old rail offset. `ui/launchpad.js` now records the names it loads in
+`$XDG_RUNTIME_DIR/edgeline-kwin-controllers.json` and unloads every other
+recorded name before loading the current one, so a rebuild replaces the
+controller instead of stacking another one on top of it.
+
 ## Scope
 
 This is a work-area reservation, not a hardware crop or resolution change.

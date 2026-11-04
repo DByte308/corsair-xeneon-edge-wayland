@@ -45,6 +45,9 @@ rail.moveable=false;geometry={...geometry,x:796};rail.frameGeometryChanged.emit(
 rail.moveable=true;rail.frameGeometryChanged.emit();assert.equal(geometry.x,700);
 workspace.windowRemoved.emit(rail);windows=windows.filter(w=>w!==rail);geometry={...geometry,x:12};rail.frameGeometryChanged.emit();assert.equal(geometry.x,12,'Removed windows must not retain live pin callbacks');
 const late=window('late','','');late.frameGeometry={x:796,y:100,width:96,height:720};windows.push(late);workspace.windowAdded.emit(late);
-late.caption='EdgeLine taskbar';late.captionChanged.emit();assert.equal(late.frameGeometry.x,796);
-late.resourceClass='electron';late.windowClassChanged.emit();assert.equal(late.frameGeometry.x,700,'Late title/class assignment must install the pin');
-console.log('pin-rail: constrain correction, idempotence, restore, maximize guards, output movement, late class and rail-only scope pass');
+late.caption='EdgeLine taskbar';late.captionChanged.emit();assert.equal(late.frameGeometry.x,700,'An unresolved class still permits the exact-title rail');
+late.resourceClass='edgeline';late.windowClassChanged.emit();assert.equal(late.frameGeometry.x,700,'Late class assignment must keep the pin');
+const spoof=window('spoof','EdgeLine taskbar','electron');spoof.frameGeometry={x:900,y:100,width:300,height:300};windows.push(spoof);workspace.windowAdded.emit(spoof);
+assert.equal(spoof.frameGeometry.x,900,'A generic electron window must not be pinned by a spoofed title');
+spoof.frameGeometryChanged.emit();assert.equal(spoof.frameGeometry.x,900);
+console.log('pin-rail: constrain correction, idempotence, restore, maximize guards, output movement, late class, spoofed title and rail-only scope pass');
