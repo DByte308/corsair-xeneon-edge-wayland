@@ -47,6 +47,7 @@ const cases = [
   ['mismatch', { ...good, id: 'other' }, {}, 'id does not match the directory'],
   ['future', { ...good, id: 'future', apiVersion: 2 }, {}, 'apiVersion 2 is not supported'],
   ['unknown-cap', { ...good, id: 'unknown-cap', capabilities: ['kernel:root'] }, {}, 'unknown capability kernel:root'],
+  ['chrome-name', { ...good, id: 'chrome-name', name: 'EdgeLine taskbar' }, {}, 'name is reserved for EdgeLine itself'],
   ['no-entry', { ...good, id: 'no-entry', entry: 'missing.html' }, {}, 'entry is missing or outside the app directory'],
   ['escape', { ...good, id: 'escape', entry: '../probe/index.html' }, {}, 'entry is missing or outside the app directory'],
   ['absolute', { ...good, id: 'absolute', entry: '/etc/passwd' }, {}, 'entry is missing or outside the app directory'],
@@ -61,6 +62,16 @@ for (const [folder, manifest, files, reason] of cases) {
   fs.rmSync(dir, { recursive: true });
 }
 assert.equal(registry.readManifest(writeApp(userRoot, 'nojson', null)).error, 'no app.json');
+
+// Two apps may not share a caption: the placement script matches on it.
+writeApp(userRoot, 'twin-a', { ...good, id: 'twin-a', name: 'Twins' });
+writeApp(userRoot, 'twin-b', { ...good, id: 'twin-b', name: 'Twins' });
+const twins = registry.list().filter((app) => app.name === 'Twins');
+assert.equal(twins.length, 2);
+assert.equal(twins.filter((app) => app.compatible).length, 1, 'one app keeps a duplicated caption');
+assert.match(twins.find((app) => !app.compatible).problem, /already uses the name Twins/);
+fs.rmSync(path.join(userRoot, 'twin-a'), { recursive: true });
+fs.rmSync(path.join(userRoot, 'twin-b'), { recursive: true });
 
 // Symlinks that escape the directory are refused, not followed.
 const outside = path.join(sandbox, 'outside.html');

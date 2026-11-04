@@ -91,6 +91,9 @@ function readManifest(directory, folderName) {
   if (folderName && id !== folderName) return { ok: false, error: 'id does not match the directory' };
   if (!SUPPORTED_API.has(parsed.apiVersion)) return { ok: false, error: `apiVersion ${parsed.apiVersion} is not supported` };
   const name = typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name.trim().slice(0, 60) : id;
+  // Window captions are what the rail and the placement script match on, so
+  // the core's own window names are not available to apps.
+  if (/^EdgeLine/i.test(name)) return { ok: false, error: 'name is reserved for EdgeLine itself' };
   const description = typeof parsed.description === 'string' ? parsed.description.slice(0, 300) : '';
   const requested = Array.isArray(parsed.capabilities) ? parsed.capabilities : [];
   const unknown = requested.filter((capability) => !CAPABILITIES.has(capability));
@@ -128,6 +131,21 @@ function discover() {
   const apps = new Map();
   for (const app of scanRoot(builtinDirectory(), 'builtin')) apps.set(app.id, app);
   for (const app of scanRoot(userDirectory(), 'user')) apps.set(app.id, app);
+  // Captions are matched by the compositor placement script, so two apps may
+  // not share one. Builtins keep their name; the rest are refused loudly
+  // rather than silently stealing each other's windows.
+  const byName = new Map();
+  for (const app of apps.values()) {
+    if (app.problem) continue;
+    byName.set(app.name, [...(byName.get(app.name) || []), app]);
+  }
+  for (const [name, group] of byName) {
+    if (group.length < 2) continue;
+    const keep = group.find((app) => app.source === 'builtin') || group[0];
+    for (const app of group) {
+      if (app !== keep) app.problem = `another app already uses the name ${name}`;
+    }
+  }
   return apps;
 }
 
@@ -135,7 +153,8 @@ function list() {
   const disabled = new Set(readDisabled());
   return [...discover().values()].map((app) => {
     if (app.problem) return {
-      id: app.id, apiVersion: null, name: app.id, description: '', capabilities: [],
+      id: app.id, apiVersion: app.apiVersion ?? null, name: app.name || app.id,
+      description: app.description || '', capabilities: app.capabilities || [],
       source: app.source, rail: false, enabled: false, compatible: false,
       problem: app.problem, unimplemented: [],
     };

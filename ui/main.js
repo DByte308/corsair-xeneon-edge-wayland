@@ -653,25 +653,56 @@ const safeMode = process.env.EDGELINE_SAFE_MODE === '1';
 const appWindows = new Map();      // webContents.id -> resolved app
 const appWindowsById = new Map();  // app id -> BrowserWindow
 const guardedSessions = new Set();
+const sessionOwners = new Map();   // partition -> app id
+
+function hostAllowed(hosts, url) {
+  if (url.protocol !== 'https:') return false;
+  return hosts.some((host) =>
+    url.hostname === host || (host.startsWith('*.') && url.hostname.endsWith(host.slice(1))));
+}
 
 function appSession(app) {
   const partition = `persist:edgeline-app-${app.id}`;
+  sessionOwners.set(partition, app.id);
   const ses = session.fromPartition(partition);
   if (!guardedSessions.has(partition)) {
     guardedSessions.add(partition);
     // No network by default. A manifest has to name the hosts it wants, and
-    // only https is allowed even then.
-    ses.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, callback) => {
+    // only https is allowed even then. The filter is deliberately unfiltered by
+    // url scheme so websockets, blobs and odd schemes all reach this decision,
+    // and the allow list is re-read per request: a manifest edited or replaced
+    // while the app runs cannot silently keep older, wider grants.
+    ses.webRequest.onBeforeRequest((details, callback) => {
       try {
         const url = new URL(details.url);
         if (url.protocol === 'file:' || url.protocol === 'devtools:') { callback({}); return; }
-        const allowed = url.protocol === 'https:' && app.network.some((host) =>
-          url.hostname === host || (host.startsWith('*.') && url.hostname.endsWith(host.slice(1))));
-        callback({ cancel: !allowed });
+        const owner = sessionOwners.get(partition);
+        const current = owner ? apps.discover().get(owner) : null;
+        const hosts = current && Array.isArray(current.network) ? current.network : [];
+        callback({ cancel: !hostAllowed(hosts, url) });
       } catch { callback({ cancel: true }); }
     });
   }
   return ses;
+}
+
+// An app window may only ever show its own entry page. Without this, a page
+// that navigates itself to another file would keep the same webContents, the
+// same preload and the same capabilities.
+function lockAppNavigation(window, app) {
+  const webContents = window.webContents;
+  const allowed = (target) => {
+    try {
+      const url = new URL(target);
+      if (url.protocol !== 'file:') return false;
+      const path = decodeURIComponent(url.pathname);
+      return path.startsWith(app.directory + '/') || path === app.entry;
+    } catch { return false; }
+  };
+  webContents.on('will-navigate', (event, target) => { if (!allowed(target)) event.preventDefault(); });
+  webContents.on('will-redirect', (event, target) => { if (!allowed(target)) event.preventDefault(); });
+  webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  webContents.on('will-attach-webview', (event) => event.preventDefault());
 }
 
 // The window's own size. Wayland ignores a client-requested position, so the
@@ -703,11 +734,16 @@ async function placeAppWindow(app) {
   const edge = edgeDisplay();
   if (!edge || process.env.XDG_SESSION_TYPE !== 'wayland') return;
   const rect = appRect(app, edge, windowOverview.snapshot());
-  const file = launchpad.scriptPath('kwin-place-app.js');
-  fs.writeFileSync(file, fs.readFileSync(file, 'utf8')
-    .replace('__EDGELINE_APP_TITLE__', JSON.stringify(app.name))
-    .replace('__EDGELINE_APP_RECT__', JSON.stringify(rect)));
-  const name = `edgeline-place-app-${process.pid}-${Date.now()}`;
+  // Each placement gets its own file: two apps opened at once must not
+  // overwrite each other's script before KWin reads it.
+  const name = `edgeline-place-app-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const file = path.join(path.dirname(launchpad.scriptPath('kwin-place-app.js')), `${name}.js`);
+  // A callback replacement, not a string: a manifest value containing $& or $`
+  // must never be interpreted as a replacement pattern.
+  fs.writeFileSync(file, fs.readFileSync(launchpad.scriptPath('kwin-place-app.js'), 'utf8')
+    .replace('__EDGELINE_APP_TITLE__', () => JSON.stringify(app.name))
+    .replace('__EDGELINE_APP_RECT__', () => JSON.stringify(rect)));
+  fs.chmodSync(file, 0o600);
   const answer = await launchpad.dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'loadScript', 'ss', file, name);
   const match = /^i (\d+)$/.exec(answer);
   if (!match) throw new Error('KWin refused app placement');
@@ -747,6 +783,7 @@ async function openApp(id) {
     },
   });
   window.removeMenu();
+  lockAppNavigation(window, app);
   window.webContents.on('console-message', (_event, level, message, line, source) => {
     if (level >= 2) console.error(`[app:${app.id}] ${source}:${line} ${message}`);
     else console.log(`[app:${app.id}] ${message}`);
