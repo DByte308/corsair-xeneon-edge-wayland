@@ -673,6 +673,20 @@ function hostAllowed(hosts, url) {
     url.hostname === host || (host.startsWith('*.') && url.hostname.endsWith(host.slice(1))));
 }
 
+const APP_THEME = path.join(__dirname, 'apps', 'app-theme.css');
+
+// Every app window gets the same sky behind whatever the app draws. Injected
+// rather than imported so an app bundle stays one directory and cannot
+// accidentally point at a file it does not own.
+function applyAppTheme(window) {
+  try {
+    window.webContents.insertCSS(fs.readFileSync(APP_THEME, 'utf8'))
+      .catch((error) => console.error('[apps] theme', error.message));
+  } catch (error) {
+    console.error('[apps] theme', error.message);
+  }
+}
+
 function appSession(app) {
   const partition = `persist:edgeline-app-${app.id}`;
   sessionOwners.set(partition, app.id);
@@ -846,6 +860,15 @@ async function openApp(id) {
   });
   window.removeMenu();
   lockAppNavigation(window, app);
+  applyAppTheme(window);
+  // A crashed renderer used to leave a blank window that never recovered.
+  // Close it so the next open creates a fresh one, and say why in the log.
+  window.webContents.on('render-process-gone', (_event, details) => {
+    console.error(`[apps] ${app.id} renderer gone: ${details.reason} (exit ${details.exitCode})`);
+    if (!window.isDestroyed()) window.destroy();
+  });
+  window.on('unresponsive', () => console.error(`[apps] ${app.id} window unresponsive`));
+  window.webContents.on('did-finish-load', () => console.log(`[apps] opened ${app.id}`));
   window.webContents.on('console-message', (_event, level, message, line, source) => {
     if (level >= 2) console.error(`[app:${app.id}] ${source}:${line} ${message}`);
     else console.log(`[app:${app.id}] ${message}`);

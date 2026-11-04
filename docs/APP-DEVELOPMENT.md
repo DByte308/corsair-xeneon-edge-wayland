@@ -79,6 +79,14 @@ announce yourself or push state; just keep the window's title accurate.
   is the expected baseline: no inline script, no inline handlers, no eval, no
   remote assets.
 
+## The backdrop is not yours
+
+The core injects `ui/apps/app-theme.css` into every app window: deep space, two
+nebula clouds, galactic haze and a drifting star field, all as gradients. Do not
+paint over `html`/`body` with your own background; you will either be overridden
+or you will break the shared look. Draw on top of the cards and keep your own
+surfaces translucent enough that the sky shows through at the edges.
+
 ## Touch and readability
 
 - The Edge is a 2560×720 strip viewed from ~60 cm and touched with a finger.

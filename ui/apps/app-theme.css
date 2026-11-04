@@ -1,0 +1,74 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Injected by the core into every app window before its own stylesheet runs.
+   Gives the panel a shared backdrop: deep space, two nebula clouds, a band of
+   galactic haze and a slow star field. Everything is gradients, so there is no
+   image to load, nothing to cache and nothing to fetch. */
+
+html {
+  background-color: #04060b;
+}
+
+body {
+  background:
+    radial-gradient(1200px 640px at 8% -12%, rgba(52, 104, 178, 0.42), transparent 62%),
+    radial-gradient(1000px 560px at 96% 112%, rgba(126, 74, 190, 0.36), transparent 60%),
+    radial-gradient(760px 380px at 72% 8%, rgba(38, 158, 226, 0.16), transparent 68%),
+    radial-gradient(620px 620px at 34% 96%, rgba(196, 96, 132, 0.12), transparent 70%),
+    linear-gradient(180deg, #070b14 0%, #04060b 55%, #050710 100%) !important;
+  background-attachment: fixed !important;
+}
+
+/* Star field. Three tile sizes at three opacities read as depth, and the drift
+   is slow enough to notice only if you look at it. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -30% -20%;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.9;
+  background-image:
+    radial-gradient(1.6px 1.6px at 17% 22%, #ffffff 50%, transparent 52%),
+    radial-gradient(1.3px 1.3px at 61% 68%, rgba(220, 236, 255, 0.95) 50%, transparent 52%),
+    radial-gradient(1.1px 1.1px at 84% 31%, rgba(255, 255, 255, 0.8) 50%, transparent 52%),
+    radial-gradient(1.4px 1.4px at 9% 74%, rgba(255, 255, 255, 0.85) 50%, transparent 52%),
+    radial-gradient(1px 1px at 46% 12%, rgba(214, 232, 255, 0.8) 50%, transparent 52%),
+    radial-gradient(1.2px 1.2px at 72% 88%, rgba(255, 255, 255, 0.7) 50%, transparent 52%),
+    radial-gradient(0.9px 0.9px at 28% 44%, rgba(186, 210, 255, 0.65) 50%, transparent 52%),
+    radial-gradient(1px 1px at 92% 62%, rgba(226, 214, 255, 0.6) 50%, transparent 52%),
+    radial-gradient(0.8px 0.8px at 55% 36%, rgba(255, 255, 255, 0.5) 50%, transparent 52%);
+  background-size:
+    190px 190px, 250px 250px, 320px 320px,
+    410px 410px, 520px 520px, 640px 640px,
+    760px 760px, 900px 900px, 1100px 1100px;
+  animation: edge-stars 300s linear infinite;
+}
+
+/* Galactic band plus a vignette so the corners fall away. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(120% 34% at 50% 118%, rgba(132, 168, 224, 0.20), transparent 72%),
+    radial-gradient(52% 20% at 26% 108%, rgba(186, 142, 226, 0.16), transparent 72%),
+    radial-gradient(38% 24% at 78% 104%, rgba(96, 170, 214, 0.14), transparent 72%),
+    radial-gradient(130% 120% at 50% 50%, transparent 55%, rgba(0, 0, 0, 0.45) 100%);
+}
+
+/* Content stays above the sky. */
+body > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes edge-stars {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-22px, -180px, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before { animation: none; }
+}
