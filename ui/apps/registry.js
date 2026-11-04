@@ -14,6 +14,7 @@ const CAPABILITIES = new Set([
   'diagnostics:read', 'windows:list', 'windows:activate', 'windows:fit',
   'media:playback', 'system:telemetry', 'display:control', 'notify',
   'clipboard:read', 'clipboard:write', 'apps:launch',
+  'profiles:run', 'kdeconnect:read',
 ]);
 const METHODS = {
   'diagnostics.read': 'diagnostics:read',
@@ -31,6 +32,9 @@ const METHODS = {
   'clipboard.write': 'clipboard:write',
   'apps.list': 'apps:launch',
   'apps.launch': 'apps:launch',
+  'profiles.list': 'profiles:run',
+  'profiles.apply': 'profiles:run',
+  'kdeconnect.devices': 'kdeconnect:read',
 };
 // A small curated set, so the rail can draw a crisp themed glyph instead of
 // two letters. An unknown name is ignored rather than refused: an icon is
@@ -47,6 +51,9 @@ const IMPLEMENTED = new Set([
   'notify.show',
   'windows.list', 'windows.activate',
   'apps.list', 'apps.launch',
+  'windows.fit', 'windows.restore',
+  'profiles.list', 'profiles.apply',
+  'kdeconnect.devices',
 ]);
 
 function builtinDirectory() { return path.join(__dirname, 'builtin'); }

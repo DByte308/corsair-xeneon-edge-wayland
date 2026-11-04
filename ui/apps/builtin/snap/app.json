@@ -1,0 +1,11 @@
+{
+  "id": "snap",
+  "apiVersion": 1,
+  "name": "Snap",
+  "description": "Drop any Edge window into a full, half or third-width slot with one tap.",
+  "entry": "index.html",
+  "capabilities": ["windows:list", "windows:fit"],
+  "icon": "layers",
+  "window": { "width": 1100, "height": 620 },
+  "network": []
+}

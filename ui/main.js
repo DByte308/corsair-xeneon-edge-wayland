@@ -32,6 +32,8 @@ const media = require('./host/media');
 const telemetry = require('./host/telemetry');
 const clipboard = require('./host/clipboard');
 const windowDecorate = require('./host/window-decorate');
+const snap = require('./host/snap');
+const kdeconnect = require('./host/kdeconnect');
 ipcMain.handle('tablet-deck-open', () => tabletDeck.open());
 ipcMain.handle('edge-windows', () => {
   const snapshot = windowOverview.snapshot();
@@ -74,6 +76,8 @@ const RECONNECT_MS = 1500;
 const MAX_AUTO_RESTARTS = 3;
 
 const EDGE_TASKBAR_WIDTH = 96;
+// KWin window ids are UUIDs; anything else is not a window we may touch.
+const uuidPattern = /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
 let taskbarWindow = null;
 let mainWindow = null;
 let tray = null;
@@ -768,6 +772,43 @@ async function placeAppWindow(app) {
   }, 8000).unref();
 }
 
+// The Edge's usable rectangle, taken from the compositor when it has reported
+// one and from the output plus the rail width otherwise.
+function edgeWorkArea() {
+  const edge = edgeDisplay();
+  if (!edge) return null;
+  const screens = windowOverview.snapshot().screens || [];
+  const match = screens.find((entry) => entry.geometry.x === edge.bounds.x
+    && entry.geometry.y === edge.bounds.y && entry.geometry.width === edge.bounds.width);
+  return match ? match.workarea : {
+    x: edge.bounds.x + EDGE_TASKBAR_WIDTH, y: edge.bounds.y,
+    width: edge.bounds.width - EDGE_TASKBAR_WIDTH, height: edge.bounds.height,
+  };
+}
+
+async function snapWindow(id, layout) {
+  if (!uuidPattern.test(String(id))) throw new Error('invalid window id');
+  const area = edgeWorkArea();
+  if (!area) throw new Error('The Edge is not connected');
+  const rect = snap.slot(area, layout);
+  if (!rect) throw new Error(`Unknown layout ${String(layout).slice(0, 20)}`);
+  const name = `edgeline-snap-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const file = path.join(path.dirname(launchpad.scriptPath('kwin-snap-window.js')), `${name}.js`);
+  fs.writeFileSync(file, fs.readFileSync(launchpad.scriptPath('kwin-snap-window.js'), 'utf8')
+    .replace('__EDGELINE_WINDOW_ID__', () => JSON.stringify(String(id)))
+    .replace('__EDGELINE_RECT__', () => JSON.stringify(rect)));
+  fs.chmodSync(file, 0o600);
+  const answer = await launchpad.dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'loadScript', 'ss', file, name);
+  const match = /^i (\d+)$/.exec(answer);
+  if (!match) throw new Error('KWin refused the snap');
+  await launchpad.dbus('org.kde.KWin', `/Scripting/Script${match[1]}`, 'org.kde.kwin.Script', 'run');
+  setTimeout(() => {
+    launchpad.dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'unloadScript', 's', name).catch(() => {});
+    try { fs.unlinkSync(file); } catch { /* already gone */ }
+  }, 8000).unref();
+  return { id, layout, rect };
+}
+
 async function openApp(id) {
   if (safeMode) throw new Error('Safe mode: apps are disabled for this run');
   const resolved = apps.resolve(id);
@@ -903,7 +944,26 @@ const APP_METHODS = {
     const result = await openApp(String(args && args.id || ''));
     return { opened: result.id, reused: result.reused === true };
   },
-  'windows.list': () => windowOverview.snapshot(),
+  'windows.fit': (args) => snapWindow(String(args && args.id || ''), String(args && args.layout || 'full')),
+  'windows.restore': async () => { await launchpad.invoke('Restore'); return { restored: true }; },
+  'profiles.list': async () => {
+    const result = await rpc('profiles.list');
+    return { profiles: (result.profiles || []).map((profile) => ({ name: String(profile.name || '').slice(0, 80),
+      active: !!profile.active })), active: String(result.active || '') };
+  },
+  'profiles.apply': async (args) => {
+    const name = String(args && args.name || '').slice(0, 80);
+    if (!name) throw new Error('No profile named');
+    const result = await rpc('profiles.apply', { name });
+    agentState.activeProfile = name;
+    refreshTray();
+    return { applied: name, result };
+  },
+  'kdeconnect.devices': () => kdeconnect.devices(),
+  'windows.list': () => {
+    const snapshot = windowOverview.snapshot();
+    return { ...snapshot, windows: windowDecorate.decorate(apps.list(), snapshot.windows) };
+  },
   'windows.activate': (args) => windowOverview.activate(String(args && args.id || '')),
   'notify.show': (args) => {
     const title = String((args && args.title) || 'EdgeLine').slice(0, 80);

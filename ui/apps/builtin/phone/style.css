@@ -1,0 +1,28 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+:root { --ground:#07080a; --panel:#101318; --line:#232833; --text:#e8ecf4; --muted:#8d97a8; --ok:#34d399; --accent:#4cc2ff; }
+* { box-sizing:border-box; }
+html,body { height:100%; }
+body { margin:0; display:flex; flex-direction:column; background:var(--ground); color:var(--text); font:13px/1.45 "Inter","Noto Sans",system-ui,sans-serif; overflow:hidden; }
+header { display:flex; align-items:center; justify-content:space-between; padding:12px 18px; border-bottom:1px solid var(--line); -webkit-app-region:drag; }
+h1 { margin:0; font-size:14px; font-weight:600; }
+.sub { margin:2px 0 0; color:var(--muted); font-size:12px; }
+.actions { display:flex; gap:8px; -webkit-app-region:no-drag; }
+button { appearance:none; border:1px solid var(--line); background:#171b22; color:var(--text); border-radius:10px; padding:8px 14px; font:inherit; cursor:pointer; }
+button.ghost { background:transparent; color:var(--muted); }
+main { flex:1; min-height:0; overflow:auto; padding:14px 18px 18px; display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; align-content:start; }
+.device { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+.device.offline { opacity:.62; }
+.device .head { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+.device .name { font-weight:600; font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.device .type { color:var(--muted); font-size:11.5px; text-transform:uppercase; letter-spacing:.08em; }
+.state { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:12px; }
+.dot { width:8px; height:8px; border-radius:50%; background:#5b6472; }
+.dot.on { background:var(--ok); }
+.battery { display:flex; align-items:center; gap:10px; }
+.bar { flex:1; height:7px; border-radius:4px; background:#1b2029; overflow:hidden; }
+.bar div { height:100%; background:var(--accent); }
+.bar.is-low div { background:#fbbf24; }
+.bar.is-empty div { background:#f87171; }
+.device .bar { min-height:7px; max-height:7px; }
+.pct { font-variant-numeric:tabular-nums; font-size:12.5px; color:#c7d3e3; min-width:38px; text-align:right; }
+.empty { grid-column:1/-1; color:var(--muted); padding:40px 4px; text-align:center; }

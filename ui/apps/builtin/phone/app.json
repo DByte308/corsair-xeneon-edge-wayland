@@ -1,0 +1,11 @@
+{
+  "id": "phone",
+  "apiVersion": 1,
+  "name": "Phone",
+  "description": "KDE Connect devices: who is reachable, who is paired, and their battery.",
+  "entry": "index.html",
+  "capabilities": ["kdeconnect:read"],
+  "icon": "chat",
+  "window": { "width": 1080, "height": 600 },
+  "network": []
+}

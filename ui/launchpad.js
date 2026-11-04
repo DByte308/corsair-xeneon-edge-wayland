@@ -96,6 +96,14 @@ function ensureController() {
   }
   return controllerLoad;
 }
+// Invoke one of the controller's own shortcuts. Used by the host when an app
+// asks to restore a fitted window.
+async function invoke(suffix) {
+  if (!/^[A-Za-z]+$/.test(String(suffix))) throw new Error('invalid controller shortcut');
+  await ensureController();
+  await dbus('org.kde.kglobalaccel', '/component/kwin', 'org.kde.kglobalaccel.Component',
+    'invokeShortcut', 's', `${shortcutPrefix}${suffix}`);
+}
 function localGameArtwork() {
   const roots = [path.join(os.homedir(), '.local/share/Steam'), path.join(os.homedir(), '.steam/steam')];
   for (const root of roots) {
@@ -159,5 +167,5 @@ async function action(name, shell) {
   // Shortcut delivery is not proof a game accepted the requested geometry.
   return { message: name === 'pick' ? 'Click the window to fit; Esc cancels' : 'Window request sent to KWin; check the target window' };
 }
-module.exports = { action, ensureController, scriptPath, dbus, plugin, controllerStatePath,
+module.exports = { action, ensureController, invoke, scriptPath, dbus, plugin, controllerStatePath,
   controllerStatus, recordedControllers, recordController, staleControllerNames };

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost">
+<title>Phone</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>Phone</h1>
+    <p id="sub" class="sub">KDE Connect devices</p>
+  </div>
+  <div class="actions">
+    <button id="refresh" type="button">Refresh</button>
+    <button id="close" type="button" class="ghost">Close</button>
+  </div>
+</header>
+<main id="list"></main>
+<script src="app.js"></script>
+</body>
+</html>

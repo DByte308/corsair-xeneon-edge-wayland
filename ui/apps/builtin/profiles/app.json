@@ -1,0 +1,11 @@
+{
+  "id": "profiles",
+  "apiVersion": 1,
+  "name": "Profiles",
+  "description": "Apply a saved panel profile in one tap: brightness, contrast and colour in one go.",
+  "entry": "index.html",
+  "capabilities": ["profiles:run"],
+  "icon": "bolt",
+  "window": { "width": 960, "height": 560 },
+  "network": []
+}

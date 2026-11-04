@@ -74,12 +74,14 @@ with all 26 host methods in an app window.
 | `diagnostics:read` | `diagnostics.read` | implemented |
 | `windows:list` | `windows.list` | implemented |
 | `windows:activate` | `windows.activate` | implemented |
-| `windows:fit` | `windows.fit`, `windows.restore` | reserved |
+| `windows:fit` | `windows.fit`, `windows.restore` | implemented |
 | `media:playback` | `media.nowPlaying`, `media.command` | implemented |
 | `system:telemetry` | `system.telemetry` | implemented |
 | `clipboard:read` | `clipboard.read` | implemented |
 | `clipboard:write` | `clipboard.write` | implemented |
 | `apps:launch` | `apps.list`, `apps.launch` | implemented |
+| `profiles:run` | `profiles.list`, `profiles.apply` | implemented |
+| `kdeconnect:read` | `kdeconnect.devices` | implemented |
 | `display:control` | `display.ddcGet`, `display.ddcSet` | reserved |
 | `notify` | `notify.show` | implemented |
 
@@ -122,6 +124,9 @@ preview used while building the first app.
 | `system-monitor` | `system:telemetry` | hwmon temperatures, fans, load, memory, NVIDIA/AMD GPUs |
 | `clipboard` | `clipboard:read`, `clipboard:write` | Klipper history as touch targets |
 | `ambient` | `media:playback` | clock and now-playing strip for an idle panel |
+| `snap` | `windows:list`, `windows:fit` | full, half and third slots for any Edge window |
+| `phone` | `kdeconnect:read` | KDE Connect devices, reachability and battery |
+| `profiles` | `profiles:run` | apply a saved panel profile in one tap |
 
 ## Isolation
 
