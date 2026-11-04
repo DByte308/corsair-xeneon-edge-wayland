@@ -152,6 +152,9 @@ the handler exists, `IMPLEMENTED` keeps callers from getting a half-answer.
 - The Rust backend feed does not yet carry `screens`/`panel`, so
   `diagnostics.read` under `EDGELINE_BACKEND=rust` reports the compositor as
   unavailable. Do not depend on those fields being present.
-- There is no icon field yet; the rail avatar is derived from the title.
+- Icons are a curated set (`play`, `pulse`, `clipboard`, `clock`, `moon`,
+  `wrench`, `grid`, `note`, `terminal`, `globe`, `chat`, `gamepad`, `camera`,
+  `layers`, `bolt`, `heart`). Name one in `app.json`; an unknown name is
+  ignored and the rail falls back to your title's initials.
 - There is no packaging step for third-party apps. A directory is the unit, and
   installing means copying it to `~/.local/share/edgeline/apps/<id>/`.

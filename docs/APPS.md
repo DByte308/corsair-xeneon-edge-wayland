@@ -37,6 +37,7 @@ new apps, but unknown `capabilities` are refused rather than silently dropped.
   "name": "Edge Doctor",
   "description": "What the compositor and the helper processes actually report.",
   "entry": "index.html",
+  "icon": "clipboard",
   "capabilities": ["diagnostics:read"],
   "window": { "width": 1180, "height": 660, "resizable": true },
   "network": [],
@@ -51,6 +52,8 @@ new apps, but unknown `capabilities` are refused rather than silently dropped.
   symlinks that escape the directory are rejected.
 - `network` is a host allow list. Empty means no network at all; the app's
   session partition blocks everything that is not `file:` or IPC.
+- `icon` names one glyph from the core's set for the rail tile. Unknown names
+  are ignored rather than refused: an icon is cosmetic.
 - `rail` is accepted and ignored. The sidebar lists every window on the Edge,
   so an app needs no registration to appear there. See
   [APP-DEVELOPMENT.md](APP-DEVELOPMENT.md).

@@ -115,6 +115,19 @@ granted.capabilities.push('display:control');
 assert.equal(registry.authorize(granted, 'display.ddcSet').ok, false, 'reserved capabilities are refused until implemented');
 assert.match(registry.authorize(granted, 'display.ddcSet').error, /not implemented/);
 
+// Icons are cosmetic: a known name is kept, an unknown one is ignored so an app
+// newer than the core still runs with its initials.
+const icons = registry.readManifest(writeApp(userRoot, 'iconned', { ...good, id: 'iconned', icon: 'play' }), 'iconned').app;
+assert.equal(icons.icon, 'play');
+assert.equal(registry.readManifest(writeApp(userRoot, 'iconless', { ...good, id: 'iconless' }), 'iconless').app.icon, null);
+assert.equal(registry.readManifest(writeApp(userRoot, 'iconnope', { ...good, id: 'iconnope', icon: 'from-the-future' }), 'iconnope').app.icon, null);
+assert.equal(registry.readManifest(writeApp(userRoot, 'iconnum', { ...good, id: 'iconnum', icon: 42 }), 'iconnum').app.icon, null);
+assert.ok(registry.ICONS.has('wrench'));
+for (const app of registry.list().filter((entry) => entry.source === 'builtin')) {
+  assert.ok(app.icon, `${app.id} ships with an icon`);
+  assert.ok(registry.ICONS.has(app.icon), `${app.id} icon is one the rail can draw`);
+}
+
 // Window defaults are bounded so a manifest cannot create a 40000px window.
 assert.deepEqual(registry.readManifest(writeApp(userRoot, 'sized', { ...good, id: 'sized', window: { width: 99999, height: -4 } }), 'sized').app.window,
   { width: 1180, height: 660, resizable: true });

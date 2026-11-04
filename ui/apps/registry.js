@@ -30,6 +30,13 @@ const METHODS = {
   'clipboard.read': 'clipboard:read',
   'clipboard.write': 'clipboard:write',
 };
+// A small curated set, so the rail can draw a crisp themed glyph instead of
+// two letters. An unknown name is ignored rather than refused: an icon is
+// cosmetic, and an app that ships one newer than the core should still run.
+const ICONS = new Set([
+  'play', 'pulse', 'clipboard', 'clock', 'moon', 'wrench', 'grid', 'note',
+  'terminal', 'globe', 'chat', 'gamepad', 'camera', 'layers', 'bolt', 'heart',
+]);
 const IMPLEMENTED = new Set([
   'diagnostics.read',
   'media.nowPlaying', 'media.command',
@@ -117,6 +124,7 @@ function readManifest(directory, folderName) {
   return { ok: true, app: {
     id, apiVersion: parsed.apiVersion, name, description, capabilities,
     directory: path.resolve(directory), entry, network,
+    icon: typeof parsed.icon === 'string' && ICONS.has(parsed.icon) ? parsed.icon : null,
     window: normalizeWindow(parsed.window), rail: parsed.rail === true,
   } };
 }
@@ -171,7 +179,7 @@ function list() {
     const loaded = !disabled.has(app.id);
     return {
       id: app.id, apiVersion: app.apiVersion, name: app.name, description: app.description,
-      capabilities: app.capabilities, source: app.source, rail: app.rail,
+      capabilities: app.capabilities, source: app.source, rail: app.rail, icon: app.icon,
       enabled: loaded, compatible: true,
       unimplemented: app.capabilities.filter((capability) => !implementedCapability(capability)),
     };
@@ -216,7 +224,7 @@ function authorize(app, method) {
 }
 
 module.exports = {
-  API_VERSION, CAPABILITIES, METHODS, ID,
+  API_VERSION, CAPABILITIES, METHODS, ID, ICONS,
   builtinDirectory, userDirectory, configPath,
   readManifest, discover, list, resolve, setEnabled, authorize,
   containedEntry, readDisabled, implementedCapability,

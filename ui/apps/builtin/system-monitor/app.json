@@ -4,7 +4,13 @@
   "name": "System",
   "description": "CPU, GPU, memory, fan and temperature readings straight from hwmon and the drivers.",
   "entry": "index.html",
-  "capabilities": ["system:telemetry"],
-  "window": { "width": 980, "height": 620 },
-  "network": []
+  "capabilities": [
+    "system:telemetry"
+  ],
+  "window": {
+    "width": 980,
+    "height": 620
+  },
+  "network": [],
+  "icon": "pulse"
 }

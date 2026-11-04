@@ -31,8 +31,12 @@ const diagnostics = require('./diagnostics');
 const media = require('./host/media');
 const telemetry = require('./host/telemetry');
 const clipboard = require('./host/clipboard');
+const windowDecorate = require('./host/window-decorate');
 ipcMain.handle('tablet-deck-open', () => tabletDeck.open());
-ipcMain.handle('edge-windows', () => windowOverview.snapshot());
+ipcMain.handle('edge-windows', () => {
+  const snapshot = windowOverview.snapshot();
+  return { ...snapshot, windows: windowDecorate.decorate(apps.list(), snapshot.windows) };
+});
 ipcMain.handle('edge-taskbar-action', (_event, action) => {
   if (action === 'home') {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
