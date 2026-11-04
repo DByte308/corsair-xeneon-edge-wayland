@@ -4,8 +4,14 @@
   "name": "Apps",
   "description": "Every EdgeLine app in one place.",
   "entry": "index.html",
-  "capabilities": ["apps:launch"],
+  "capabilities": [
+    "apps:launch"
+  ],
   "icon": "grid",
-  "window": { "width": 1560, "height": 660 },
-  "network": []
+  "window": {
+    "width": 1560,
+    "height": 660
+  },
+  "network": [],
+  "rail": false
 }

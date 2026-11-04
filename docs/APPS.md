@@ -54,8 +54,10 @@ new apps, but unknown `capabilities` are refused rather than silently dropped.
   session partition blocks everything that is not `file:` or IPC.
 - `icon` names one glyph from the core's set for the rail tile. Unknown names
   are ignored rather than refused: an icon is cosmetic.
-- `rail` is accepted and ignored. The sidebar lists every window on the Edge,
-  so an app needs no registration to appear there. See
+- `rail` defaults to `true`: the sidebar lists every window on the Edge, so an
+  app needs no registration to appear there. Set `"rail": false` for a launcher
+  that is opened from a fixed rail button and should not also appear as its own
+  tile; the app drawer is the one app that does this. See
   [APP-DEVELOPMENT.md](APP-DEVELOPMENT.md).
 - `name` may not start with `EdgeLine`, and no two installed apps may share a
   name: the window caption is the rail label and the compositor placement key.

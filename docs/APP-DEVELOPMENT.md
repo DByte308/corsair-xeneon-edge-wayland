@@ -20,6 +20,9 @@ That has consequences:
   the dashboard and the settings window, which the rail deliberately hides.
 - **One window per app.** `openApp` reuses the existing window. Do not open
   additional top-level windows from your page; they are denied.
+- **Launchers set `"rail": false`** so they do not appear twice: once as a
+  fixed rail button and once as a window tile. Ordinary apps leave it unset and
+  show up in the rail while they run.
 - **Your manifest is your drawer entry.** The Apps app lists every installed,
   enabled app from `app.json`: name, description, icon. Nothing to register, and
   a disable in `~/.config/edgeline/apps.json` removes the tile.

@@ -774,7 +774,13 @@ async function openApp(id) {
   if (!resolved.ok) throw new Error(resolved.error);
   const app = resolved.app;
   const existing = appWindowsById.get(app.id);
-  if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return { id: app.id, opened: true, reused: true }; }
+  if (existing && !existing.isDestroyed()) {
+    existing.show();
+    // Wayland will not raise on focus() alone, so ask for the top explicitly.
+    existing.moveTop();
+    existing.focus();
+    return { id: app.id, opened: true, reused: true };
+  }
   const bounds = appBounds(app);
   const window = new BrowserWindow({
     ...bounds,
