@@ -52,6 +52,14 @@ function recordedControllers() {
     return Array.isArray(parsed) ? staleControllerNames(parsed, null) : [];
   } catch { return []; }
 }
+async function controllerStatus() {
+  const recorded = recordedControllers();
+  let currentLoaded = false;
+  try {
+    currentLoaded = (await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'isScriptLoaded', 's', plugin)) === 'b true';
+  } catch { /* KWin may be restarting; report the recorded state instead */ }
+  return { plugin, loaded: currentLoaded, recorded, stale: recorded.filter((name) => name !== plugin).length };
+}
 function recordController(name) {
   if (!CONTROLLER_NAME.test(name)) return;
   // Only this controller remains loaded: everything else recorded was just
@@ -152,4 +160,4 @@ async function action(name, shell) {
   return { message: name === 'pick' ? 'Click the window to fit; Esc cancels' : 'Window request sent to KWin; check the target window' };
 }
 module.exports = { action, ensureController, scriptPath, dbus, plugin, controllerStatePath,
-  recordedControllers, recordController, staleControllerNames };
+  controllerStatus, recordedControllers, recordController, staleControllerNames };

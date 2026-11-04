@@ -31,4 +31,5 @@ function start(){
   });
 }
 function stop(){stopping=true;if(timer)clearTimeout(timer);timer=null;if(child)child.kill('SIGTERM');}
-module.exports={start,stop};
+function status(){return {running:!!child && !child.killed,pid:child?child.pid:null,failures};}
+module.exports={start,stop,status};

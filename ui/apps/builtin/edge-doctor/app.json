@@ -1,0 +1,11 @@
+{
+  "id": "edge-doctor",
+  "apiVersion": 1,
+  "name": "Edge Doctor",
+  "description": "What the compositor, the reservation helper and the KWin controller actually report, compared with what EdgeLine expects.",
+  "entry": "index.html",
+  "capabilities": ["diagnostics:read"],
+  "window": { "width": 1180, "height": 680, "resizable": true },
+  "network": [],
+  "rail": false
+}

@@ -8,7 +8,7 @@
 'use strict';
 
 const { app, BrowserWindow, Menu, Tray, ipcMain, screen, shell, nativeTheme,
-        Notification } = require('electron');
+        Notification, session } = require('electron');
 const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const net = require('net');
@@ -26,6 +26,8 @@ const launchpad = rustBackendEnabled ? require('./rust-services').launchpad : re
 const windowOverview = rustBackendEnabled ? require('./rust-services').windowOverview : require('./window-overview');
 const tabletDeck = require('./tablet-deck');
 const workarea = require('./workarea');
+const apps = require('./apps/registry');
+const diagnostics = require('./diagnostics');
 ipcMain.handle('tablet-deck-open', () => tabletDeck.open());
 ipcMain.handle('edge-windows', () => windowOverview.snapshot());
 ipcMain.handle('edge-taskbar-action', (_event, action) => {
@@ -642,6 +644,195 @@ function showMainWindow() {
   }
 }
 
+// ---- apps ----------------------------------------------------------------
+// Apps are plain web pages from a directory, and every host method they can
+// reach is gated by the capabilities in their manifest. The core keeps the
+// privileged parts (work area, sidebar, KWin controller, window fitting) to
+// itself; see docs/APPS.md.
+const safeMode = process.env.EDGELINE_SAFE_MODE === '1';
+const appWindows = new Map();      // webContents.id -> resolved app
+const appWindowsById = new Map();  // app id -> BrowserWindow
+const guardedSessions = new Set();
+
+function appSession(app) {
+  const partition = `persist:edgeline-app-${app.id}`;
+  const ses = session.fromPartition(partition);
+  if (!guardedSessions.has(partition)) {
+    guardedSessions.add(partition);
+    // No network by default. A manifest has to name the hosts it wants, and
+    // only https is allowed even then.
+    ses.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, callback) => {
+      try {
+        const url = new URL(details.url);
+        if (url.protocol === 'file:' || url.protocol === 'devtools:') { callback({}); return; }
+        const allowed = url.protocol === 'https:' && app.network.some((host) =>
+          url.hostname === host || (host.startsWith('*.') && url.hostname.endsWith(host.slice(1))));
+        callback({ cancel: !allowed });
+      } catch { callback({ cancel: true }); }
+    });
+  }
+  return ses;
+}
+
+// The window's own size. Wayland ignores a client-requested position, so the
+// compositor places it in the Edge work area; see placeAppWindow.
+function appBounds(app) {
+  return { width: app.window.width, height: app.window.height };
+}
+
+// The requested rectangle inside the Edge's usable area. Clamped to the work
+// area, never to the reserved strip the sidebar lives in.
+function appRect(app, edge, overview) {
+  const screens = (overview && overview.screens) || [];
+  const match = screens.find((entry) => entry.geometry.x === edge.bounds.x
+    && entry.geometry.y === edge.bounds.y && entry.geometry.width === edge.bounds.width);
+  const area = match ? match.workarea : {
+    x: edge.bounds.x + EDGE_TASKBAR_WIDTH, y: edge.bounds.y,
+    width: edge.bounds.width - EDGE_TASKBAR_WIDTH, height: edge.bounds.height,
+  };
+  const width = Math.min(app.window.width, Math.max(320, area.width - 24));
+  const height = Math.min(app.window.height, Math.max(200, area.height - 24));
+  return {
+    x: Math.round(area.x + (area.width - width) / 2),
+    y: Math.round(area.y + (area.height - height) / 2),
+    width, height,
+  };
+}
+
+async function placeAppWindow(app) {
+  const edge = edgeDisplay();
+  if (!edge || process.env.XDG_SESSION_TYPE !== 'wayland') return;
+  const rect = appRect(app, edge, windowOverview.snapshot());
+  const file = launchpad.scriptPath('kwin-place-app.js');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8')
+    .replace('__EDGELINE_APP_TITLE__', JSON.stringify(app.name))
+    .replace('__EDGELINE_APP_RECT__', JSON.stringify(rect)));
+  const name = `edgeline-place-app-${process.pid}-${Date.now()}`;
+  const answer = await launchpad.dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'loadScript', 'ss', file, name);
+  const match = /^i (\d+)$/.exec(answer);
+  if (!match) throw new Error('KWin refused app placement');
+  await launchpad.dbus('org.kde.KWin', `/Scripting/Script${match[1]}`, 'org.kde.kwin.Script', 'run');
+  setTimeout(() => {
+    launchpad.dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'unloadScript', 's', name).catch(() => {});
+  }, 8000).unref();
+}
+
+async function openApp(id) {
+  if (safeMode) throw new Error('Safe mode: apps are disabled for this run');
+  const resolved = apps.resolve(id);
+  if (!resolved.ok) throw new Error(resolved.error);
+  const app = resolved.app;
+  const existing = appWindowsById.get(app.id);
+  if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return { id: app.id, opened: true, reused: true }; }
+  const bounds = appBounds(app);
+  const window = new BrowserWindow({
+    ...bounds,
+    title: app.name,
+    icon: APP_ICON,
+    frame: false,
+    show: false,
+    resizable: app.window.resizable,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    backgroundColor: '#07080A',
+    webPreferences: {
+      preload: path.join(__dirname, 'apps', 'app-preload.js'),
+      session: appSession(app),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webviewTag: false,
+      spellcheck: false,
+    },
+  });
+  window.removeMenu();
+  window.webContents.on('console-message', (_event, level, message, line, source) => {
+    if (level >= 2) console.error(`[app:${app.id}] ${source}:${line} ${message}`);
+    else console.log(`[app:${app.id}] ${message}`);
+  });
+  appWindows.set(window.webContents.id, app);
+  appWindowsById.set(app.id, window);
+  window.once('ready-to-show', () => {
+    window.show();
+    // Size comes from the manifest; position has to come from the compositor.
+    placeAppWindow(app).catch((error) => console.error('[apps]', app.id, error.message));
+  });
+  window.on('closed', () => {
+    appWindows.delete(window.webContents.id);
+    if (appWindowsById.get(app.id) === window) appWindowsById.delete(app.id);
+  });
+  window.loadFile(app.entry).catch((error) => {
+    console.error('[apps]', app.id, error.message);
+    window.destroy();
+  });
+  return { id: app.id, opened: true, reused: false };
+}
+
+function closeApp(id) {
+  const window = appWindowsById.get(id);
+  if (window && !window.isDestroyed()) window.destroy();
+  return { id, closed: true };
+}
+
+async function collectDiagnostics() {
+  const displays = screen.getAllDisplays().map((display) => ({
+    id: String(display.id),
+    label: display.label || '',
+    size: { width: display.size.width, height: display.size.height },
+    bounds: display.bounds,
+    workArea: display.workArea,
+    scaleFactor: display.scaleFactor,
+    internal: !!display.internal,
+  }));
+  const edge = findEdgeDisplay(displays, screen.getPrimaryDisplay().id);
+  const overview = windowOverview.snapshot();
+  let controller = { plugin: '', loaded: false, recorded: [], stale: 0 };
+  try {
+    if (typeof launchpad.controllerStatus === 'function') controller = await launchpad.controllerStatus();
+  } catch (error) { controller = { plugin: '', loaded: false, recorded: [], stale: 0, error: error.message }; }
+  return diagnostics.collect({
+    generatedAt: new Date().toISOString(),
+    railWidth: EDGE_TASKBAR_WIDTH,
+    edgeId: edge ? String(edge.id) : null,
+    host: {
+      runtime: 'Electron', version: process.versions.electron, pid: process.pid,
+      session: process.env.XDG_SESSION_TYPE || 'unknown',
+      desktop: process.env.XDG_CURRENT_DESKTOP || 'unknown',
+      backend: rustBackendEnabled ? 'rust' : 'electron', safeMode,
+      rendering: process.env.WEBKIT_DISABLE_DMABUF_RENDERER === '1' ? 'DMA-BUF disabled for this app'
+        : (process.env.EDGELINE_BACKEND === 'rust' ? 'native host default' : 'default'),
+    },
+    displays: displays.map((display) => ({ ...display, geometry: display.bounds,
+      workarea: display.workArea, name: display.label, scale: display.scaleFactor })),
+    compositor: { screens: overview.screens || [], panel: overview.panel || [] },
+    overview: { available: !!overview.available, count: (overview.windows || []).length, error: overview.error || '' },
+    controller,
+    reservation: workarea.status(),
+    agent: { socket: SOCKET, connected: connected_() },
+  });
+}
+
+ipcMain.handle('apps-list', () => ({ safeMode, apps: apps.list() }));
+ipcMain.handle('app-open', (_event, id) => openApp(id));
+ipcMain.handle('app-close', (event) => {
+  const app = appWindows.get(event.sender.id);
+  if (app) BrowserWindow.fromWebContents(event.sender)?.destroy();
+  return { closed: !!app };
+});
+ipcMain.handle('app-window-info', (event) => {
+  const app = appWindows.get(event.sender.id);
+  return app ? { id: app.id, name: app.name, capabilities: app.capabilities } : null;
+});
+ipcMain.handle('app-call', async (event, method) => {
+  const app = appWindows.get(event.sender.id);
+  if (!app) throw new Error('Not an app window');
+  const allowed = apps.authorize(app, method);
+  if (!allowed.ok) throw new Error(allowed.error);
+  if (method === 'diagnostics.read') return collectDiagnostics();
+  throw new Error(`${method} has no handler`);
+});
+
 function buildTrayMenu() {
   const connected = connected_();
   const items = [
@@ -691,6 +882,8 @@ function buildTrayMenu() {
   }
 
   items.push({ type: 'separator' });
+  items.push({ label: 'Edge Doctor…', enabled: !!edgeDisplay() && !safeMode,
+    click: () => openApp('edge-doctor').catch((error) => console.error('[apps]', error.message)) });
   items.push({ label: 'Quit EdgeLine', click: () => { quitting = true; app.quit(); } });
   return Menu.buildFromTemplate(items);
 }
@@ -931,7 +1124,14 @@ ipcMain.handle('app-info', () => ({
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    console.log('[apps] second instance', JSON.stringify(argv));
+    // A second launch is only a request to the running instance. That keeps
+    // the single-owner rule (one work area, one rail) while still making
+    // `electron . --open-app=edge-doctor` usable from a terminal.
+    const requested = argv.find((arg) => arg.startsWith('--open-app='));
+    const appId = requested ? requested.slice('--open-app='.length) : (argv.includes('--edgeline-doctor') ? 'edge-doctor' : '');
+    if (appId) openApp(appId).catch((error) => console.error('[apps]', error.message));
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
@@ -978,6 +1178,12 @@ if (!app.requestSingleInstanceLock()) {
     // it up without driving the interface blind.
     if (process.argv.includes('--edgeline-panel'))
       setTimeout(openDashboardWindow, 800);
+    // Same idea for the first app bundle: a flag instead of driving the tray.
+    if (process.argv.includes('--edgeline-doctor'))
+      setTimeout(() => openApp('edge-doctor').catch((error) => console.error('[apps]', error.message)), 900);
+    // Testing hook for a first app without a tray click.
+    if (process.env.EDGELINE_OPEN_APP)
+      setTimeout(() => openApp(process.env.EDGELINE_OPEN_APP).catch((error) => console.error('[apps]', error.message)), 1200);
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
     });

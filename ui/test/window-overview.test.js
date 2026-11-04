@@ -5,11 +5,13 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const signal = () => ({connect() {}});
-const edge = {geometry:{width:2560,height:720}};
-const other = {geometry:{width:3440,height:1440}};
+const edge = {name:'DP-1',geometry:{x:467,y:2880,width:2560,height:720}};
+const other = {name:'HDMI-A-2',geometry:{x:0,y:0,width:3440,height:1440}};
+const areas = new Map([[edge,{x:563,y:2880,width:2464,height:720}],[other,{x:0,y:0,width:3440,height:1394}]]);
 const id = '{12345678-1234-1234-1234-123456789abc}';
 function window(caption, output, app='test') {
   return {internalId:id,caption,output,resourceClass:app,normalWindow:true,active:false,minimized:false,
+    frameGeometry:{x:467,y:2880,width:96,height:720},keepAbove:false,
     frameGeometryChanged:signal(),captionChanged:signal(),minimizedChanged:signal(),outputChanged:signal()};
 }
 const game = window('VanguardGalaxy',edge,'steam_app_3471800');
@@ -19,15 +21,22 @@ const dashboard = window('EdgeLine dashboard',edge,'edgeline');
 const windows = [game,elsewhere,control,dashboard];
 let latest;
 const workspace = {screens:[edge,other],windowList:()=>windows,windowAdded:signal(),windowRemoved:signal(),
-  windowActivated:signal(),screensChanged:signal(),raiseWindow(w){this.raised=w;}};
+  windowActivated:signal(),screensChanged:signal(),currentDesktop:{},
+  clientArea(_option,screen){return areas.get(screen);},raiseWindow(w){this.raised=w;}};
 const source=fs.readFileSync(path.join(__dirname,'../kwin-window-overview.js'),'utf8').replace('__EDGELINE_BUS__','"dev.test"');
 function report() {
-  vm.runInNewContext(source,{workspace,callDBus(...args){latest=JSON.parse(args.at(-1));}});
+  vm.runInNewContext(source,{workspace,KWin:{MaximizeArea:1},callDBus(...args){latest=JSON.parse(args.at(-1));}});
 }
 report();
 assert.equal(latest.windows.length,1);
 assert.equal(latest.windows[0].app,'steam_app_3471800');
 assert.equal(latest.available,true);
+assert.deepEqual(latest.screens.map((s)=>[s.name,s.workarea.x,s.workarea.width]),[['DP-1',563,2464],['HDMI-A-2',0,3440]],
+  'the feed reports compositor work areas, not only app windows');
+assert.deepEqual(latest.panel.map((p)=>[p.title,p.x,p.width,p.keepAbove]),[['EdgeLine',467,96,false],['EdgeLine dashboard',467,96,false]],
+  'panel windows are reported so a displaced rail is visible');
+control.frameGeometry={x:563,y:2880,width:96,height:720};control.keepAbove=true;report();
+assert.equal(latest.panel[0].x,563,'a displaced rail is reported as it really is');
 game.minimized=true; game.active=true;
 report();assert.equal(latest.windows[0].minimized,true);assert.equal(latest.windows[0].active,true);
 workspace.screens=[edge,edge];report();assert.equal(latest.available,false);assert.equal(latest.windows.length,0);

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost">
+<title>Edge Doctor</title>
+<link rel="stylesheet" href="doctor.css">
+</head>
+<body>
+<header id="bar">
+  <div class="brand">
+    <span class="mark"></span>
+    <div>
+      <h1>Edge Doctor</h1>
+      <p id="subtitle">Reading the desktop…</p>
+    </div>
+  </div>
+  <div class="actions">
+    <button id="refresh" type="button" title="Re-read the desktop">Refresh</button>
+    <button id="raw" type="button" title="Show or hide the raw payload">Raw</button>
+    <button id="close" type="button" class="ghost" title="Close">Close</button>
+  </div>
+</header>
+<main id="report" aria-live="polite"></main>
+<section id="rawPane" hidden>
+  <pre id="rawText"></pre>
+</section>
+<footer id="foot"><span id="generated"></span><span id="hint"></span></footer>
+<script src="model.js"></script>
+<script src="doctor.js"></script>
+</body>
+</html>

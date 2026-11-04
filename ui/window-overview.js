@@ -8,6 +8,30 @@ let child = null;
 let tag = null;
 let state = { available: false, windows: [], error: 'Connecting to KWin…' };
 const uuid = /^\{?[0-9a-f]{8}-[0-9a-f-]{27}\}?$/i;
+const integer = (value, min, max) => (Number.isInteger(value) && value >= min && value <= max ? value : null);
+function readRect(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const x = integer(raw.x, -100000, 100000), y = integer(raw.y, -100000, 100000);
+  const width = integer(raw.width, 1, 100000), height = integer(raw.height, 1, 100000);
+  return x === null || y === null || width === null || height === null ? null : { x, y, width, height };
+}
+function readScreens(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 16).flatMap((entry) => {
+    const geometry = readRect(entry && entry.geometry);
+    const workarea = readRect(entry && entry.workarea);
+    if (!geometry || !workarea) return [];
+    return [{ name: String(entry.name || '').slice(0, 64), geometry, workarea }];
+  });
+}
+function readPanel(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 16).flatMap((entry) => {
+    const rect = readRect(entry);
+    if (!rect || typeof entry.title !== 'string') return [];
+    return [{ title: entry.title.slice(0, 128), ...rect, keepAbove: !!entry.keepAbove, minimized: !!entry.minimized }];
+  });
+}
 async function load(file, name) {
   const result = await dbus('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', 'loadScript', 'ss', file, name);
   const match = /^i (\d+)$/.exec(result);
@@ -34,7 +58,8 @@ async function start() {
         state = { available:!!data.available, error:'', windows:data.windows.slice(0, 100)
           .filter(w => typeof w.id === 'string' && uuid.test(w.id))
           .map(w => ({id:w.id, title:String(w.title).slice(0,256), app:String(w.app).slice(0,128),
-            active:!!w.active, minimized:!!w.minimized})) };
+            active:!!w.active, minimized:!!w.minimized})),
+          screens:readScreens(data.screens), panel:readPanel(data.panel) };
       }
     } catch (error) { console.error('[window-overview]', error.message); }
   });

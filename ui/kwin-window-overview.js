@@ -17,8 +17,21 @@
                     app:String(w.resourceClass), active:!!w.active, minimized:!!w.minimized});
             });
         }
+        var panel = [];
+        var screens = workspace.screens.map(function (s) {
+            var area = workspace.clientArea(KWin.MaximizeArea, s, workspace.currentDesktop);
+            return {name:String(s.name),
+                geometry:{x:s.geometry.x,y:s.geometry.y,width:s.geometry.width,height:s.geometry.height},
+                workarea:{x:area.x,y:area.y,width:area.width,height:area.height}};
+        });
+        workspace.windowList().forEach(function (w) {
+            if (!/^EdgeLine/.test(String(w.caption))) return;
+            panel.push({title:String(w.caption), x:w.frameGeometry.x, y:w.frameGeometry.y,
+                width:w.frameGeometry.width, height:w.frameGeometry.height,
+                keepAbove:!!w.keepAbove, minimized:!!w.minimized});
+        });
         callDBus(__EDGELINE_BUS__, '/Windows', 'dev.edgeline.Windows', 'Update',
-            JSON.stringify({available:outputs.length === 1, windows:windows}));
+            JSON.stringify({available:outputs.length === 1, windows:windows, screens:screens, panel:panel}));
     }
     function track(w) {
         w.frameGeometryChanged.connect(publish);

@@ -10,7 +10,7 @@
     "start": "electron . --class=edgeline",
     "dist:dir": "electron-builder --linux dir --publish never",
     "dist:appimage": "electron-builder --linux AppImage --publish never",
-    "test": "node test/edge-display.test.js && node test/distro.test.js && node test/kwin-launchpad.test.js && node test/window-overview.test.js && node test/taskbar-placement.test.js && node test/window-selection.test.js && node test/workarea.test.js && node test/pin-rail.test.js && node test/kwin-controller.test.js"
+    "test": "node test/edge-display.test.js && node test/distro.test.js && node test/kwin-launchpad.test.js && node test/window-overview.test.js && node test/taskbar-placement.test.js && node test/window-selection.test.js && node test/workarea.test.js && node test/pin-rail.test.js && node test/kwin-controller.test.js && node test/apps-registry.test.js && node test/doctor.test.js"
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^6.5.2"
@@ -47,7 +47,10 @@
       "assets/**/*",
       "node_modules/@fortawesome/fontawesome-free/css/**/*",
       "node_modules/@fortawesome/fontawesome-free/webfonts/**/*",
-      "package.json"
+      "package.json",
+      "apps/**/*",
+      "diagnostics.js",
+      "kwin-place-app.js"
     ],
     "extraResources": [
       {
