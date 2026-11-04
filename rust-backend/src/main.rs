@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+pub mod hardware;
 mod kwin;
 mod model;
 use anyhow::{Context, Result, bail};

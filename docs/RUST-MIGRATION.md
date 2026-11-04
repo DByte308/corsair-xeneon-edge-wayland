@@ -61,6 +61,15 @@ The native host reads legacy panel preferences as a fallback, but writes its own
 `edgeline-rust` configuration only on explicit settings changes. Smoke mode blocks
 host mutations, hardware writes, child-server startup and preference changes.
 
+## Hardware port foundation
+
+`rust-backend/src/hardware.rs` now reproduces the verified 64-byte HID frame
+container, picture query/set packet layouts, and strict settings-reply parsing.
+Five Rust tests use the same byte fixtures as the C++ protocol test; both test
+sets pass. Truncated reads, stale acknowledgements, wrong report IDs and wrong
+commands are rejected. This is a pure codec: it neither opens the device nor
+exposes writes over RPC. The C++ agent still owns actual hardware operations.
+
 ## Still pending
 
 - C++/Qt hardware agent: HID, DDC, sensors, profiles and its existing RPC calls.
