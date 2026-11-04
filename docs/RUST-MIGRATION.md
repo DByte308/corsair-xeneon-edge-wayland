@@ -43,7 +43,14 @@ A hidden Wayland smoke test loaded all six original page modules, constructed th
 Picture page, detected the real Edge, and read a real `state.all` response from
 the existing hardware agent. It reported zero JavaScript/CSP errors. This is a
 **DOM/API test, not a visual rendering or touch/presentation acceptance test**.
-The currently running Electron application was not stopped or replaced.
+The Electron process remains available for rollback. A subsequent bounded visible
+trial minimized only its EdgeLine windows and restored them on trial exit. The
+operator reported the native UI appeared to run correctly. Initial mapped
+rendering failed on the NVIDIA/AMD system with a Wayland protocol error; a scoped
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` workaround kept it running. The native entry
+point applies that compatibility path only on NVIDIA/Wayland when no explicit
+value is supplied. Set the variable to `0` to opt out. This does not change
+session or compositor settings, and is not a performance benchmark.
 
 The native host currently requires an unscaled, unambiguous 2560×720 Edge, to
 match the compositor scripts' coordinate contract. It implements hiding its own
@@ -57,8 +64,10 @@ host mutations, hardware writes, child-server startup and preference changes.
 ## Still pending
 
 - C++/Qt hardware agent: HID, DDC, sensors, profiles and its existing RPC calls.
-- Native Tauri host visible-window, tray and physical hotplug parity checks.
-  The host now compiles and passes hidden DOM/API tests; it is not yet the deployed app.
+- Remaining native host parity checks: detailed app switching/picker, tray,
+  Tablet Deck, physical touch and hotplug. The operator confirmed basic visible
+  rendering and Home/Settings operation in a bounded trial. It is not yet the
+  permanently deployed app.
 - Settings, packaging and startup ownership consolidation.
 - Gestures: the unfinished Python prototype is not enabled or bundled. The
   eventual recognizer, touch proxy and portal handling need a Rust implementation.

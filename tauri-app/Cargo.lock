@@ -699,7 +699,6 @@ name = "edgeline-desktop"
 version = "0.7.0"
 dependencies = [
  "anyhow",
- "gtk",
  "serde",
  "serde_json",
  "tauri",

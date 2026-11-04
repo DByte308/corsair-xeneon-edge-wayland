@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+mod rendering;
 mod rpc;
 mod tablet;
 use anyhow::{Context, Result, bail};
@@ -238,10 +239,15 @@ fn create_window(
     .position(x, b["y"].as_f64().unwrap_or(0.))
     .inner_size(width, b["height"].as_f64().unwrap_or(720.))
     .decorations(false)
-    .resizable(!rail)
+    .resizable(true)
+    .min_inner_size(
+        if rail { 96. } else { 940. },
+        if rail { 100. } else { 620. },
+    )
     .skip_taskbar(label != "main")
     .always_on_top(label != "main")
-    .focused(false)
+    .focusable(label == "main")
+    .focused(label == "main" && !smoke)
     .visible(false)
     .initialization_script(if smoke {
         format!("window.__EDGE_SMOKE__=true;\n{BRIDGE}")
@@ -254,15 +260,6 @@ fn create_window(
         }
     })
     .build()?;
-    if label != "main" {
-        let w = window.clone();
-        app.run_on_main_thread(move || {
-            use gtk::prelude::*;
-            if let Ok(native) = w.gtk_window() {
-                native.set_accept_focus(false);
-            }
-        })?;
-    }
     if !smoke && edge(app)?.is_some() {
         window.show()?;
     }
@@ -611,6 +608,7 @@ fn install_tray(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 fn main() {
+    rendering::prepare();
     let smoke = std::env::args().any(|s| s == "--smoke-test");
     let hidden = std::env::args().any(|s| s == "--hidden");
     // A second native host must not create duplicate taskbars or own a shared backend.
