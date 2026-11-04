@@ -845,14 +845,23 @@ async function snapWindow(id, layout) {
   return { id, layout, rect };
 }
 
+// The dashboard sits always-on-top while Home is open, so an app opened from
+// the rail or the drawer was being created underneath it and looked like it
+// never opened. Drop the dashboard's stacking for the duration of the app.
+function lowerDashboard() {
+  if (dashWindow && !dashWindow.isDestroyed()) dashWindow.setAlwaysOnTop(false);
+}
+
 async function openApp(id) {
   if (safeMode) throw new Error('Safe mode: apps are disabled for this run');
   const resolved = apps.resolve(id);
   if (!resolved.ok) throw new Error(resolved.error);
   const app = resolved.app;
+  lowerDashboard();
   const existing = appWindowsById.get(app.id);
   if (existing && !existing.isDestroyed()) {
     existing.show();
+    existing.setAlwaysOnTop(false);
     // Wayland will not raise on focus() alone, so ask for the top explicitly.
     existing.moveTop();
     existing.focus();
@@ -907,6 +916,7 @@ async function openApp(id) {
   appWindowsById.set(app.id, window);
   window.once('ready-to-show', () => {
     window.show();
+    window.moveTop();
     // Size comes from the manifest; position has to come from the compositor.
     // A toplevel can map after its page is ready, so one late retry covers the
     // first-open race. The placement script is idempotent when already right.

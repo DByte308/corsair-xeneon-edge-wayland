@@ -13,6 +13,14 @@
         // An unresolved class is allowed: it can arrive after the caption.
         return !resourceClass || /^edgeline$/i.test(resourceClass);
     }
+    // The dashboard is opened always-on-top, so an app launched while Home is
+    // up would appear underneath it. Placement is a good moment to drop that:
+    // the compositor is the authority on stacking, not the Electron window.
+    function lowerDashboard() {
+        workspace.windowList().forEach(function (w) {
+            if (String(w.caption) === 'EdgeLine dashboard') w.keepAbove = false;
+        });
+    }
     function place() {
         workspace.windowList().forEach(function (w) {
             if (!matches(w)) return;
@@ -31,6 +39,7 @@
             // Place only. An app window behaves like any other window: the rail
             // raises it on demand instead of it floating over a game.
             w.frameGeometry = {x:rect.x, y:rect.y, width:rect.width, height:rect.height};
+            lowerDashboard();
             placed = w;
         });
     }
@@ -46,6 +55,7 @@
             }
         });
     }
+    lowerDashboard();
     workspace.windowList().forEach(watch);
     workspace.windowAdded.connect(function (w) { watch(w); place(); });
     place();
