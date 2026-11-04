@@ -9,12 +9,18 @@
         if (outputs.length === 1) {
             var edge = outputs[0];
             workspace.windowList().forEach(function (w) {
-                if (!w.normalWindow || w.deleted || w.skipTaskbar
-                    || /^EdgeLine/.test(String(w.caption))
-                    || /^(edgeline|xwaylandvideobridge)$/.test(String(w.resourceClass))) return;
+                var caption = String(w.caption);
+                var resourceClass = String(w.resourceClass);
+                // EdgeLine's own app windows are real Edge apps and belong in
+                // the rail; its chrome (sidebar, dashboard, settings) does not.
+                var ownApp = /^edgeline$/i.test(resourceClass)
+                    && caption.length > 0 && !/^EdgeLine/.test(caption);
+                if (!w.normalWindow || w.deleted) return;
+                if (/^xwaylandvideobridge$/i.test(resourceClass)) return;
+                if (!ownApp && (/^EdgeLine/.test(caption) || w.skipTaskbar)) return;
                 if (w.output !== edge) return;
-                windows.push({id:String(w.internalId), title:String(w.caption),
-                    app:String(w.resourceClass), active:!!w.active, minimized:!!w.minimized});
+                windows.push({id:String(w.internalId), title:caption,
+                    app:resourceClass, active:!!w.active, minimized:!!w.minimized, own:ownApp});
             });
         }
         var panel = [];

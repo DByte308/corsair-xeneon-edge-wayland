@@ -58,7 +58,7 @@ async function start() {
         state = { available:!!data.available, error:'', windows:data.windows.slice(0, 100)
           .filter(w => typeof w.id === 'string' && uuid.test(w.id))
           .map(w => ({id:w.id, title:String(w.title).slice(0,256), app:String(w.app).slice(0,128),
-            active:!!w.active, minimized:!!w.minimized})),
+            active:!!w.active, minimized:!!w.minimized, own:w.own === true})),
           screens:readScreens(data.screens), panel:readPanel(data.panel) };
       }
     } catch (error) { console.error('[window-overview]', error.message); }

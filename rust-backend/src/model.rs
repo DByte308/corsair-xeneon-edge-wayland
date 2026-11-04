@@ -9,6 +9,9 @@ pub struct Window {
     pub app: String,
     pub active: bool,
     pub minimized: bool,
+    // EdgeLine's own app windows are Edge apps too; older feeds omit the flag.
+    #[serde(default)]
+    pub own: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

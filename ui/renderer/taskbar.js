@@ -6,6 +6,12 @@ let artwork = null;
 let busy = false;
 api.launchpadAction('artwork').then(({image}) => { artwork=image; previous=''; }).catch(()=>{});
 function identity(app) {
+  // An EdgeLine app window is named by its title, not by the shared class.
+  if (app.own) {
+    const label = String(app.title || 'App').trim() || 'App';
+    const mark = label.split(/\s+/).slice(0, 2).map((word) => word[0]).join('').toUpperCase();
+    return {name: label, mark: mark || label.slice(0, 2).toUpperCase(), own: true};
+  }
   const name = app.app.toLowerCase();
   if (name === 'steam_app_3471800') return {name:'Vanguard',mark:'VG',game:true};
   if (/steam/.test(name)) return {name:'Steam',mark:'St'};
@@ -27,7 +33,7 @@ async function refresh() {
       const info=identity(app);
       const button=document.createElement('button');
       button.dataset.id=app.id;
-      button.className=app.minimized?'app-minimized':'';
+      button.className=[app.minimized?'app-minimized':'',info.own?'app-own':''].filter(Boolean).join(' ');
       button.title=`${info.name}: ${app.title}`;
       button.setAttribute('aria-label',`Switch to ${app.title}`);
       button.setAttribute('aria-pressed',String(app.active));
@@ -35,6 +41,7 @@ async function refresh() {
       if(info.game&&artwork){const image=document.createElement('img');image.src=artwork;image.alt='';avatar.append(image);}
       else avatar.textContent=info.mark;
       const label=document.createElement('span');label.className='app-name';label.textContent=info.name;
+      if(info.own)button.title=`${info.name} (EdgeLine app)`;
       button.append(avatar,label);
       button.onclick=async()=>{if(busy)return;busy=true;button.disabled=true;
         try{await api.activateEdgeWindow(app.id);}

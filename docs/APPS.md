@@ -51,8 +51,11 @@ new apps, but unknown `capabilities` are refused rather than silently dropped.
   symlinks that escape the directory are rejected.
 - `network` is a host allow list. Empty means no network at all; the app's
   session partition blocks everything that is not `file:` or IPC.
-- `rail` marks apps that want a sidebar tile. Reserved for a later phase; the
-  field is validated now so manifests do not need rewriting later.
+- `rail` is accepted and ignored. The sidebar lists every window on the Edge,
+  so an app needs no registration to appear there. See
+  [APP-DEVELOPMENT.md](APP-DEVELOPMENT.md).
+- `name` may not start with `EdgeLine`, and no two installed apps may share a
+  name: the window caption is the rail label and the compositor placement key.
 
 ## Capabilities
 
@@ -140,8 +143,9 @@ can leave the desktop without a working sidebar.
 2. Settings becomes an app. The page keeps its markup; only its host calls move
    behind capabilities.
 3. Touch, then Home, then the Tablet Deck preview.
-4. New apps on the proven contract: now playing, rail running apps, ambient
-   mode, launch profiles, snap zones.
+4. New apps on the proven contract: now playing, system telemetry, ambient
+   mode, launch profiles, snap zones. The rail already lists every running Edge
+   window, EdgeLine apps included, so switching works for all of them.
 5. Native-helper apps last, behind the sandboxed scope runner.
 
 ## Known core-only behaviour

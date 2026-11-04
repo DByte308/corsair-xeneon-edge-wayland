@@ -15,5 +15,6 @@ button:disabled { opacity:.5; cursor:wait; }
 .app-avatar img { width:100%; height:100%; object-fit:cover; object-position:75% center; }
 .app-name { max-width:100%; padding:0 2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:11px; }
 .app-minimized .app-avatar { opacity:.55; }
+.app-own .app-avatar { background:linear-gradient(140deg,#2a4a68,#17202e); color:#9fd8ff; }
 #connection { color:#94acc3; font-size:10px; text-align:center; line-height:1.4; overflow-wrap:anywhere; }
 #connection:empty { display:none; }
