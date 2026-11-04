@@ -27,6 +27,20 @@ It stops with the host. A compositor disconnect or process crash also destroys
 the Wayland surface, which automatically restores the ordinary work area. No
 Plasma panel or persistent display configuration is installed.
 
+## Keep the bar outside its own reservation
+
+KDE constrains ordinary windows when a work area changes, including the
+Electron/Tauri sidebar itself. The persistent KWin controller therefore pins
+only the owned `EdgeLine taskbar` to the physical output's left edge, not the
+usable work area's left edge. Geometry, output, restore and late title/class
+changes re-check the pin. Equality and reentrancy guards prevent recursive
+geometry writes. Minimized rollback windows are left alone; removed windows
+stop receiving corrections. Other app/settings windows are not pinned.
+
+Live checks verified both a forced constrain-like displacement and restarting
+the reservation helper: the bar stayed at output x, while usable app space
+started at output x+96. Independent read-only review also checked the fix.
+
 ## Scope
 
 This is a work-area reservation, not a hardware crop or resolution change.
