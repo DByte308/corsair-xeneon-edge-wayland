@@ -22,6 +22,13 @@ advisory lock allows only one active owner. Additional hosts wait for ownership
 rather than doubling the reserved width. Parent process start time is monitored
 so a dead, zombie or reused PID cannot leave an orphaned reservation.
 
+The compositor decides how tall the column may be. At login a panel that is
+still settling on the Edge shortens the available height: 96×690 was observed,
+and the helper treated that as an error and exited, which left the whole
+2560×720 work area covering the rail and put every new app window under the
+sidebar. It now keeps the granted height, rebuilds its buffer on the next
+configure once the panel is gone, and refuses only a width other than 96.
+
 Both the Electron rollback host and native Tauri host own this Rust helper.
 It stops with the host. A compositor disconnect or process crash also destroys
 the Wayland surface, which automatically restores the ordinary work area. No
@@ -40,6 +47,15 @@ stop receiving corrections. Other app/settings windows are not pinned.
 Live checks verified both a forced constrain-like displacement and restarting
 the reservation helper: the bar stayed at output x, while usable app space
 started at output x+96. Independent read-only review also checked the fix.
+
+Placement does not depend on the reservation being there. `ui/host/edge-area.js`
+clamps the compositor work area to the rail column, and both app placement and
+the snap slots go through it, so a missing reservation can no longer move a
+window under the rail. The placement script additionally keeps the rail above
+the app window and refuses to leave an Edge app fullscreen over it. If the
+helper still exits, the host retries with exponential backoff (1 s doubling to
+30 s, eight restarts) and logs every attempt to the host log file rather than
+console only.
 
 ## One live controller
 
@@ -77,7 +93,8 @@ the path with `EDGELINE_WORKAREA_HELPER`.
 
 ## Verification
 
-- Rust tests cover output ambiguity, scale/rotation guards and process identity.
+- Rust tests cover output ambiguity, scale/rotation guards, process identity and
+the granted strip size at login.
 - Lifecycle tests cover single helper ownership per host, bounded retries,
   app stop and the parent/wait arguments.
 - KWin fit regression verifies no double subtraction when work area is already

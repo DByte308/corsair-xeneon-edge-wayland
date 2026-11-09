@@ -25,7 +25,23 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 };
 
 const WIDTH: u32 = 96;
+const HEIGHT: u32 = 720;
 static RUNNING: AtomicBool = AtomicBool::new(true);
+
+// The compositor decides how tall the column may be: at login a panel that is
+// still settling on the Edge shortens the available height (96x690 was seen),
+// and it grows back into a later configure once that panel is gone. The
+// reservation is a column, so the granted height is accepted and the buffer is
+// rebuilt on the next configure. Only the width is a contract, because that is
+// the space the rail owns.
+fn granted_size(width: u32, height: u32) -> Result<(u32, u32)> {
+    let width = if width == 0 { WIDTH } else { width };
+    let height = if height == 0 { HEIGHT } else { height };
+    if width != WIDTH {
+        bail!("Compositor assigned unexpected reservation width {width}");
+    }
+    Ok((width, height))
+}
 extern "C" fn stop(_: libc::c_int) {
     RUNNING.store(false, Ordering::Relaxed);
 }
@@ -133,11 +149,7 @@ impl State {
         if let Some(reservation) = &mut self.reservation
             && let Some((width, height)) = reservation.pending.take()
         {
-            let width = if width == 0 { WIDTH } else { width };
-            let height = if height == 0 { 720 } else { height };
-            if width != WIDTH || height != 720 {
-                bail!("Compositor assigned unexpected reservation size {width}x{height}");
-            }
+            let (width, height) = granted_size(width, height)?;
             let size = (width * height * 4) as i32;
             // A newly truncated memfd is zero-filled: every pixel is transparent.
             let fd =
@@ -175,7 +187,7 @@ impl State {
             reservation.memory = Some(memory);
             println!(
                 "{}",
-                serde_json::json!({"reserved":true,"output":self.outputs[&reservation.output].name,"width":WIDTH,"input":false,"transparent":true})
+                serde_json::json!({"reserved":true,"output":self.outputs[&reservation.output].name,"width":width,"height":height,"input":false,"transparent":true})
             );
         }
         Ok(())
@@ -458,6 +470,18 @@ mod tests {
         assert_eq!(state.selected(), Some(3));
         state.outputs.remove(&3);
         assert_eq!(state.selected(), None);
+    }
+    #[test]
+    fn a_shorter_column_at_login_is_not_a_reason_to_quit() {
+        // Zero means "you decide", so the full strip is used.
+        assert_eq!(granted_size(0, 0).unwrap(), (96, 720));
+        assert_eq!(granted_size(96, 0).unwrap(), (96, 720));
+        // A panel settling on the Edge shortens the granted height for a moment.
+        assert_eq!(granted_size(96, 690).unwrap(), (96, 690));
+        assert_eq!(granted_size(96, 702).unwrap(), (96, 702));
+        // The width is the reserved column, so that must not move.
+        assert!(granted_size(64, 720).is_err());
+        assert!(granted_size(96, 720).is_ok());
     }
     #[test]
     fn parent_monitor_uses_process_start_time() {

@@ -32,6 +32,7 @@ const media = require('./host/media');
 const telemetry = require('./host/telemetry');
 const clipboard = require('./host/clipboard');
 const windowDecorate = require('./host/window-decorate');
+const edgeArea = require('./host/edge-area');
 const snap = require('./host/snap');
 const kdeconnect = require('./host/kdeconnect');
 ipcMain.handle('tablet-deck-open', () => tabletDeck.open());
@@ -93,7 +94,7 @@ function logLine(...parts) {
 }
 logLine('[app] starting', app.getVersion());
 
-const EDGE_TASKBAR_WIDTH = 96;
+const EDGE_TASKBAR_WIDTH = edgeArea.RAIL_WIDTH;
 // KWin window ids are UUIDs; anything else is not a window we may touch.
 const uuidPattern = /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
 let taskbarWindow = null;
@@ -766,23 +767,11 @@ function appBounds(app) {
   return { width: app.window.width, height: app.window.height };
 }
 
-// The requested rectangle inside the Edge's usable area. Clamped to the work
-// area, never to the reserved strip the sidebar lives in.
+// The requested rectangle inside the Edge's usable area. The rail column is
+// always carved out, never trusted to a compositor reservation that may be
+// missing. See host/edge-area.js.
 function appRect(app, edge, overview) {
-  const screens = (overview && overview.screens) || [];
-  const match = screens.find((entry) => entry.geometry.x === edge.bounds.x
-    && entry.geometry.y === edge.bounds.y && entry.geometry.width === edge.bounds.width);
-  const area = match ? match.workarea : {
-    x: edge.bounds.x + EDGE_TASKBAR_WIDTH, y: edge.bounds.y,
-    width: edge.bounds.width - EDGE_TASKBAR_WIDTH, height: edge.bounds.height,
-  };
-  const width = Math.min(app.window.width, Math.max(320, area.width - 24));
-  const height = Math.min(app.window.height, Math.max(200, area.height - 24));
-  return {
-    x: Math.round(area.x + (area.width - width) / 2),
-    y: Math.round(area.y + (area.height - height) / 2),
-    width, height,
-  };
+  return edgeArea.appRect(app, edge, (overview && overview.screens) || []);
 }
 
 async function placeAppWindow(app) {
@@ -809,17 +798,12 @@ async function placeAppWindow(app) {
 }
 
 // The Edge's usable rectangle, taken from the compositor when it has reported
-// one and from the output plus the rail width otherwise.
+// one and from the output otherwise. Either way the rail column stays out.
 function edgeWorkArea() {
   const edge = edgeDisplay();
   if (!edge) return null;
   const screens = windowOverview.snapshot().screens || [];
-  const match = screens.find((entry) => entry.geometry.x === edge.bounds.x
-    && entry.geometry.y === edge.bounds.y && entry.geometry.width === edge.bounds.width);
-  return match ? match.workarea : {
-    x: edge.bounds.x + EDGE_TASKBAR_WIDTH, y: edge.bounds.y,
-    width: edge.bounds.width - EDGE_TASKBAR_WIDTH, height: edge.bounds.height,
-  };
+  return edgeArea.railSafeArea(edge, edgeArea.compositorArea(edge, screens));
 }
 
 async function snapWindow(id, layout) {
@@ -865,6 +849,8 @@ async function openApp(id) {
     // Wayland will not raise on focus() alone, so ask for the top explicitly.
     existing.moveTop();
     existing.focus();
+    // Logged so "the app did not open" can be told apart from "it was raised".
+    logLine(`[apps] raised ${app.id}`);
     return { id: app.id, opened: true, reused: true };
   }
   const bounds = appBounds(app);
@@ -1363,6 +1349,10 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    // The reservation helper's own failures have to reach the log file: the
+    // main process' console output is unreliable once Electron is up, and a
+    // silently missing reservation is what put app windows under the rail.
+    workarea.setLog(logLine);
     workarea.start();
     connect();
     // Nothing is listening on a fresh machine, so bring the agent up rather

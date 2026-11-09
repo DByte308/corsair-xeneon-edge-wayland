@@ -41,6 +41,10 @@ announce yourself or push state; just keep the window's title accurate.
   supported and are ignored. The core asks KWin for a rectangle inside the
   Edge's usable area, which starts 96 px in from the physical left edge and is
   2464×720 on a 2560×720 Edge.
+- That 96 px column belongs to the rail whether or not the compositor currently
+  reports it as reserved: placement and snap geometry clamp to it, so an app
+  window never sits underneath the sidebar and never covers it. You do not have
+  to do anything for this, and you cannot opt out of it.
 - Declare a size that fits that area with a margin. The core clamps to the work
   area, but a 2400×700 app on a 2464×720 work area has no breathing room.
   `1180×680` and `900×600` both feel right in practice.

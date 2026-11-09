@@ -11,9 +11,9 @@ const place = fs.readFileSync(path.join(root, 'kwin-place-app.js'), 'utf8');
 // not end up underneath it, which is what "Apps does nothing" looked like.
 assert.match(place, /function lowerDashboard\(\)/, 'placement can lower the dashboard');
 assert.match(place, /'EdgeLine dashboard'\)\s*w\.keepAbove = false/, 'and it does so through the compositor');
-assert.ok(place.indexOf('lowerDashboard();') < place.indexOf('lowerDashboard();\n    workspace.windowList()'),
+assert.ok(place.indexOf('\n    lowerDashboard();') < place.indexOf('workspace.windowList().forEach(watch)'),
   'it runs before the placement watchers are installed');
-assert.match(place, /lowerDashboard\(\);\s*\n\s*placed = w;/, 'and again once the window has been placed');
+assert.match(place, /lowerDashboard\(\);\s*keepRailAbove\(\);\s*placed = w;/, 'and again once the window has been placed');
 assert.match(main, /function lowerDashboard\(\)/, 'the host also drops its own always-on-top flag');
 assert.match(main, /const app = resolved\.app;\s*\n\s*lowerDashboard\(\);/, 'opening any app lowers the dashboard first');
 
