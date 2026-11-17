@@ -24,6 +24,20 @@ struct Host {
     prefs: Mutex<Value>,
     children: Mutex<Vec<Child>>,
     owns_core: AtomicBool,
+    /// Route the web UI's whole `rpc` channel to the Rust backend instead of the
+    /// C++ compatibility agent, and do not start the agent at all.
+    ///
+    /// This is the cutover switch: with the agent running, every datum the UI draws
+    /// comes from it and the Rust backend is exercised only by the three newest
+    /// calls (window feed, activation, launchpad), so a "passing" run proves
+    /// nothing about the port. `EDGELINE_BACKEND=rust` is opt-in so the documented
+    /// rollback stays the default.
+    ///
+    /// It moves three things, not one: the `rpc` data channel, the event/status
+    /// channel (`agent_events`) and the agent's own start-up. Moving only `rpc`
+    /// would leave the UI reporting "agent not running" while Rust serves it, and
+    /// every `sensors`/`focus`/`ui.action` event would come from nobody.
+    core_only: bool,
     connected: AtomicBool,
     quitting: AtomicBool,
     smoke: bool,
@@ -31,6 +45,16 @@ struct Host {
     suspended: Mutex<Vec<String>>,
     deck: tokio::sync::Mutex<Option<tablet::Deck>>,
 }
+/// Whether `rpc` goes to the Rust backend and the agent stays down.
+///
+/// Read once at startup from `EDGELINE_BACKEND=rust` — deliberately the *same*
+/// variable and value the Electron host uses (`ui/main.js`), because two names for
+/// one decision would mean two rollback instructions and one trap at the acceptance
+/// run: wrong variable, old path, everything looks green.
+fn core_only() -> bool {
+    std::env::var("EDGELINE_BACKEND").as_deref() == Ok("rust")
+}
+
 fn home() -> Result<PathBuf> {
     Ok(PathBuf::from(
         std::env::var_os("HOME").context("HOME is required")?,
@@ -114,6 +138,7 @@ impl Host {
             prefs: Mutex::new(prefs),
             children: Mutex::new(Vec::new()),
             owns_core: AtomicBool::new(false),
+            core_only: core_only(),
             connected: AtomicBool::new(false),
             quitting: AtomicBool::new(false),
             smoke,
@@ -203,7 +228,24 @@ impl Host {
         self.children.lock().unwrap().push(child);
         Ok(())
     }
+    /// One line at startup naming the data plane. The confusion this session spent
+    /// the most time on was nobody being able to say who was serving the panel.
+    fn announce_backend(&self) {
+        let backend = if self.core_only { "rust" } else { "agent" };
+        eprintln!(
+            "EdgeLine host: backend={backend} core={} agent={}",
+            self.core.display(),
+            self.agent.display()
+        );
+    }
+
     fn ensure_agent(&self, app: &AppHandle) -> Result<()> {
+        if self.core_only {
+            // No agent at all: the Rust backend owns the panel in this mode, and a
+            // second hardware owner would contend for the i2c bus and the
+            // dev.edgeline.Windows name.
+            return Ok(());
+        }
         if self.smoke || std::os::unix::net::UnixStream::connect(&self.agent).is_ok() {
             return Ok(());
         }
@@ -404,11 +446,20 @@ async fn dispatch(
             {
                 bail!("Mutation RPC disabled during smoke testing");
             }
-            rpc::call(&state.agent, name, params["params"].clone()).await
+            // The cutover switch: the data plane is the Rust backend when asked for
+            // it, otherwise the agent that still owns it today.
+            let socket = if state.core_only {
+                &state.core
+            } else {
+                &state.agent
+            };
+            rpc::call(socket, name, params["params"].clone()).await
         }
-        "agent-connected" => {
-            Ok(json!({"connected":state.connected.load(Ordering::Relaxed),"socket":state.agent}))
-        }
+        "agent-connected" => Ok(json!({
+            "connected": state.connected.load(Ordering::Relaxed),
+            "socket": if state.core_only { &state.core } else { &state.agent },
+            "core": state.core_only,
+        })),
         "app-info" => {
             let distro = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
             let prefs = state.prefs.lock().unwrap().clone();
@@ -529,7 +580,12 @@ async fn dispatch(
 fn agent_events(app: AppHandle, state: Arc<Host>) {
     tauri::async_runtime::spawn(async move {
         while !state.quitting.load(Ordering::Relaxed) {
-            if let Ok(stream) = UnixStream::connect(&state.agent).await {
+            let socket = if state.core_only {
+                &state.core
+            } else {
+                &state.agent
+            };
+            if let Ok(stream) = UnixStream::connect(socket).await {
                 state.connected.store(true, Ordering::Relaxed);
                 let _ = app.emit("agent-status", json!({"connected":true}));
                 let mut reader = BufReader::new(stream);
@@ -677,6 +733,7 @@ fn main() {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
+            setup_state.announce_backend();
             setup_state.ensure_agent(&handle)?;
             agent_events(handle.clone(), setup_state.clone());
             if smoke {

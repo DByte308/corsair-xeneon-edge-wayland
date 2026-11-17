@@ -155,6 +155,44 @@ sockets still answering. It prints who holds `/dev/hidraw1` as information only:
 Wine/Proton HID passthrough holds every node on a gaming desktop, hidraw is
 multi-open with per-fd queues, so that does not block or steal our reports.
 
+### Cutover mode: prove the Rust backend is the data plane
+
+By default the Tauri host sends the web UI's whole `rpc` channel to the **C++ agent**
+(`$XDG_RUNTIME_DIR/edgeline.sock`) and starts that agent itself; the Rust backend
+serves only the three newest calls (window feed, activation, launchpad). A "passing"
+run in that mode proves nothing about the port — every value the UI draws comes from
+the agent.
+
+```sh
+EDGELINE_BACKEND=rust tauri-app/target/release/edgeline-desktop
+```
+
+moves three things at once: `rpc` to the Rust socket, the event/status channel
+(`agent_events`, `agent-connected`) to the same socket, and the agent's start-up away
+entirely. It is the same variable and value the Electron host uses, so there is one
+rollback instruction, not two. The host prints which path is live at startup:
+
+```
+EdgeLine host: backend=rust core=$XDG_RUNTIME_DIR/edgeline-rust/backend.sock \
+                          agent=$XDG_RUNTIME_DIR/edgeline.sock
+```
+
+After the host is up, confirm the mode with `scripts/gate-c-preflight.sh --expect
+rust`: it fails if `edgeline-agent` or the Electron UI is still running or the legacy
+socket exists. Verified on this machine: with `EDGELINE_BACKEND=rust` no agent process
+and no `edgeline.sock`, the device card and the DDC log in the UI populated from the
+Rust backend, and `ddcLog` events arrived in the webview — the event channel, not just
+the request path.
+
+Every renderer method the UI calls is served by the Rust backend (34 checked:
+`state.all`, `ddc.*`, `profiles.*`, `rules.*`, `sensors.*`, `touch.*`, `media.*`,
+`updates.*`, `screen.*`, `color.state`, `gestures.config`). The seven methods the
+**built-in apps** call are a separate matter — see the note in PROJECT_STATUS: they are
+host responsibilities (`apps.list`, `clipboard.read`, `windows.list`,
+`media.nowPlaying`, `system.telemetry`, `kdeconnect.devices`, `diagnostics.read`) and
+the Tauri host does not implement them yet, so those apps are broken in the native host
+in either mode.
+
 The C++ agent must not be running during the run: it is today's hardware owner,
 opening the panel per exchange and shelling out to `ddcutil`, so with both agents
 up they contend for the i2c bus and the `dev.edgeline.Windows` name. Stop

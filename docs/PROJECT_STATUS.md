@@ -145,6 +145,22 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   one fd because the event forwarder stayed parked owning the write half
   (`b1_sensors_stream_broadcasts_merged_snapshots`,
   `b1_closed_connections_release_their_sockets`).
+- **The Tauri host's data plane is switchable, and defaults to the agent.** Without
+  `EDGELINE_BACKEND=rust` the web UI's `rpc` channel and every event go to the C++
+  agent, which the host also starts itself; the Rust backend then serves only the
+  window feed, activation and launchpad. With the variable set, all three paths move
+  to the Rust socket and the agent is not started at all — verified on the panel: no
+  agent process, no `edgeline.sock`, device card and DDC log populated from Rust,
+  `ddcLog` events reaching the webview. Every renderer method the UI calls is served
+  by the Rust backend (34 checked).
+- **The built-in apps need host methods the Tauri host does not have.** `apps.list`,
+  `clipboard.read`, `windows.list`, `media.nowPlaying`, `system.telemetry`,
+  `kdeconnect.devices` and `diagnostics.read` are implemented in the Electron host
+  (`APP_METHODS` in `ui/main.js`) and in neither backend — the agent never had them
+  either. So app-drawer, clipboard, snap, now-playing, system-monitor, phone and
+  doctor are broken in the native host today, independently of the cutover. Either
+  port that table into `tauri-app` or declare those apps out of gate-C scope; do not
+  discover it during the acceptance run.
 - **Touch contacts come from evdev, not XInput2.** The C++ agent read the
   digitizer over XInput2, which cannot see it on a Wayland session, so its stream
   delivered nothing there. `touch/evdev.rs` reads the panel's own node instead

@@ -27,6 +27,25 @@
 
 set -u
 
+expect=""
+case "${1:-}" in
+    --expect)
+        expect="${2:-}"
+        case "$expect" in
+            rust|agent) ;;
+            *) printf 'usage: %s [--expect rust|agent]\n' "$0" >&2; exit 2 ;;
+        esac
+        ;;
+    "") ;;
+    -h|--help)
+        printf 'usage: %s [--expect rust|agent]\n' "$0"
+        printf '  --expect rust   after starting the host with EDGELINE_BACKEND=rust,\n'
+        printf '                  require that the agent is gone and Rust owns the panel\n'
+        exit 0
+        ;;
+    *) printf 'usage: %s [--expect rust|agent]\n' "$0" >&2; exit 2 ;;
+esac
+
 runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 socket="$runtime/edgeline-rust/backend.sock"
 legacy_socket="$runtime/edgeline.sock"
@@ -85,7 +104,11 @@ say ""
 
 say "1. EdgeLine processes"
 running=$(edgeline_processes)
-if [ -n "$running" ]; then
+if [ -n "$running" ] && [ "$expect" = "rust" ]; then
+    # Expected here: the host and its backend are supposed to be running.
+    info "running (expected after a host start):"
+    printf '%s\n' "$running" | sed 's/^/          /'
+elif [ -n "$running" ]; then
     bad "EdgeLine processes are already running; the run must start from a clean slate:"
     printf '%s\n' "$running" | while IFS="$(printf '\t')" read -r pid argv0; do
         printf '          %s  %s\n' "$pid" "$argv0"
@@ -94,6 +117,28 @@ if [ -n "$running" ]; then
     info "(stopping the unit alone leaves the UI running, and the UI starts an agent again)"
 else
     ok "none"
+fi
+
+if [ "$expect" = "rust" ]; then
+    # This mode runs *after* the host started, so the host's own processes are
+    # expected: only the agent and the Electron UI mean the data plane is not Rust.
+    agent_or_electron=$(printf '%s\n' "$running" | grep -E 'edgeline-agent|electron' || true)
+    if [ -n "$agent_or_electron" ]; then
+        bad "cutover mode: the old data plane is still up:"
+        printf '%s\n' "$agent_or_electron" | sed 's/^/          /'
+    else
+        ok "cutover mode: no agent, no Electron UI"
+    fi
+    if [ -S "$legacy_socket" ]; then
+        bad "cutover mode: $legacy_socket still exists — the agent is the data plane"
+    else
+        ok "cutover mode: no agent socket"
+    fi
+    if printf '%s\n' "$running" | grep -q edgeline-agent; then
+        bad "cutover mode: edgeline-agent is running"
+    else
+        ok "cutover mode: no edgeline-agent process"
+    fi
 fi
 
 say ""
