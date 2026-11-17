@@ -3,6 +3,7 @@ pub mod hardware;
 mod ddc;
 mod hid;
 mod kwin;
+mod media;
 mod model;
 mod touch;
 mod sensors;
@@ -35,6 +36,7 @@ struct Backend {
     ddc: std::sync::Arc<ddc::Ddc>,
     touch: std::sync::Mutex<touch::Touch>,
     sensors: std::sync::Mutex<sensors::SensorSource>,
+    media: media::Media,
     shutdown: watch::Sender<bool>,
 }
 
@@ -72,7 +74,7 @@ fn artwork() -> Result<Value> {
     }
     Ok(json!({"image":null}))
 }
-fn base64(input: &[u8]) -> String {
+pub(crate) fn base64(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
@@ -386,6 +388,18 @@ impl Backend {
                 guard.set_gpu_selection(keep.clone());
                 Ok(json!({ "gpus": arr, "selected": keep }))
             }
+            "media.control" => {
+                self.media
+                    .control(parameter("action")?)
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                Ok(json!({ "ok": true }))
+            }
+            "notifications.clear" => {
+                self.media.clear_notifications();
+                Ok(json!({ "ok": true }))
+            }
+            "media.snapshot" => Ok(self.media.snapshot().await),
             _ => bail!("Unsupported Rust backend method: {}", request.method),
         }
     }
@@ -526,6 +540,7 @@ async fn main() -> Result<()> {
         ddc,
         touch: std::sync::Mutex::new(touch::Touch::new(touch::config::touch_path())),
         sensors: std::sync::Mutex::new(sensors::SensorSource::new()),
+        media: media::Media::new().await,
         shutdown,
     });
     let listener = UnixListener::bind(&socket)?;
