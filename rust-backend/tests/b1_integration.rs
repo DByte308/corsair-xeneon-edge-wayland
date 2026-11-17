@@ -237,24 +237,31 @@ fn b1_live_kwin_window_feed() {
     // Only KWin may supply window reports. An untrusted DBus caller must be
     // rejected by the backend's sender check (kwin.rs header.sender() vs the
     // registered KWin owner). The bus name the backend owns is
-    // dev.edgeline.Windows.rust.p{pid}; send a foreign Update and require a
-    // refusal. Mirrors busctl --user call dev.edgeline.Windows.rust.p{pid}
-    //   /Windows dev.edgeline.Windows Update s '<payload>'
+    // dev.edgeline.Windows.rust.p{backend_pid}; send a foreign Update and
+    // require a refusal. Mirrors busctl --user call?
+    //   busctl --user call dev.edgeline.Windows.rust.p{pid}
+    //       /Windows dev.edgeline.Windows Update s '<payload>'
     let bus_name = format!("dev.edgeline.Windows.rust.p{}", har.backend_pid());
     let payload = r#"{"available":false,"windows":[]}"#;
     let out = std::process::Command::new("busctl")
         .args(["--user", "call", &bus_name, "/Windows", "dev.edgeline.Windows", "Update", "s", payload])
         .output();
-    if let Ok(output) = out {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let denied = stderr.contains("Only KWin") || stderr.contains("Access denied") || stderr.contains("AccessDenied");
-        assert!(
-            denied,
-            "foreign window report must be denied, got stderr: {stderr}"
-        );
-    } else {
-        // busctl may be absent; the backend is still the authority. Skip the
-        // assertion rather than fail the suite on a missing tool.
-        eprintln!("skipping untrusted-DBus denial (busctl unavailable)");
+    // This is the live-gated test: a real desktop (KDE) session always has
+    // busctl, so a missing tool must not be silently skipped (that would hide a
+    // coverage hole). Fail loudly instead.
+    match out {
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let denied = stderr.contains("Only KWin")
+                || stderr.contains("Access denied")
+                || stderr.contains("AccessDenied");
+            assert!(
+                denied,
+                "foreign window report must be denied, got stderr: {stderr}"
+            );
+        }
+        Err(error) => panic!(
+            "untrusted-DBus denial could not be checked: busctl not available ({error})"
+        ),
     }
 }
