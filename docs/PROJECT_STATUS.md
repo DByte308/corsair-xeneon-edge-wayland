@@ -78,9 +78,14 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
     `sensors` (streamed at the client's interval), `screen`, `touch`,
     `touchConfig`, `profiles` (`{active}`/`{changed}`), `rules`, `update`,
     `ddc`, `ddcLog`. Still missing, each needing a watcher the Rust backend does
-    not have: `device` (hotplug), `focus` (rules arming), `touch.point`/`gesture`
-    (XInput2 stream) and `ui.action` (dashboard actions currently fall through to
-    KWin). The `sensors` event carries the merged media fields: `state.all` and
+    not have: `device` (hotplug), `focus` (rules arming) and
+    `touch.point`/`gesture` (XInput2 stream). `ui.action` is now emitted for the
+    dashboard vocabulary (`dashboard-toggle`, `dashboard-page-next`): those live
+    in the UI process, so `launchpad.action` relays them instead of failing as an
+    unknown KWin shortcut, matching `Api::runGestureAction`. The remaining
+    gesture actions that C++ performs itself (`brightness-up`/`-down`,
+    `blank-toggle`, `profile-next`/`-previous`) belong to the gesture bridge and
+    stay unimplemented with gestures disabled. The `sensors` event carries the merged media fields: `state.all` and
     the event share `with_media`, so the dashboard's now-playing tile and
     notification badge survive each tick.
 - **B3** Make Tauri the default build / entry.
@@ -114,13 +119,17 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   one fd because the event forwarder stayed parked owning the write half
   (`b1_sensors_stream_broadcasts_merged_snapshots`,
   `b1_closed_connections_release_their_sockets`).
-- **No event-broadcast channel for `device`, `focus`, `touch.point`/`gesture`,
-  `ui.action`.** Those four need machinery the Rust backend does not have yet: a
-  hotplug watcher (udev/HID), the X11 focus watcher (so `rules.get` still
-  reports `watching:false`), the XInput2 touch stream (the `touch.stream` arm
-  turns on nothing), and `launchpad.action` routing dashboard actions to the UI
-  instead of KWin. Dashboard tiles that follow sensors, DDC, profiles and rules
-  now update live; anything driven by those four does not.
+- **No event-broadcast channel for `device`, `focus`, `touch.point`/`gesture`.**
+  Those three need machinery the Rust backend does not have yet: a hotplug
+  watcher (udev/HID), the X11 focus watcher (so `rules.get` still reports
+  `watching:false`), and the XInput2 touch stream (the `touch.stream` arm turns
+  on nothing). `ui.action` **is** emitted now: `launchpad.action` relays the
+  dashboard vocabulary (`dashboard-toggle`, `dashboard-page-next`) to the UI
+  process that owns the dashboard, as `Api::runGestureAction` does, instead of
+  failing as an unknown KWin shortcut; the window vocabulary is validated up
+  front so a typo cannot load the KWin controller either. Dashboard tiles that
+  follow sensors, DDC, profiles and rules update live; anything driven by the
+  three watchers above does not.
 - Rust backend still reports `hardware: "legacy C++ agent (not migrated)"` in
   `backend.info` — the C++ agent is still the running hardware owner for the
   Electron host; the Rust backend is invoked alongside it during dev. The

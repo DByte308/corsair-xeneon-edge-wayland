@@ -233,6 +233,37 @@ fn b1_read_only_rpc_contract() {
         unsup.get("error").is_some(),
         "unsupported method must be rejected, got {unsup}"
     );
+
+    // 6. A dashboard action belongs to the UI process (the dashboard is a
+    //    window, not a device), so it is relayed as `ui.action` and answered
+    //    normally — not rejected as an unknown KWin shortcut.
+    let relay = client
+        .call("launchpad.action", json!({ "action": "dashboard-toggle" }))
+        .unwrap();
+    assert!(relay.get("error").is_none(), "{relay}");
+    assert_eq!(relay["result"]["relayed"], json!(true), "{relay}");
+    // Other events (the DDC queue draining) can arrive first; look for ours.
+    client.set_read_timeout(Duration::from_secs(2)).unwrap();
+    let mut relayed = None;
+    while let Ok(event) = client.next_event() {
+        if event["event"] == "ui.action" {
+            relayed = Some(event);
+            break;
+        }
+    }
+    let relayed = relayed.expect("a dashboard action must be relayed as ui.action");
+    assert_eq!(relayed["data"]["action"], "dashboard-toggle", "{relayed}");
+
+    // 7. An action outside the vocabulary is refused by name, not turned into a
+    //    KWin request (the controller script must not load for a typo).
+    let bad_action = client
+        .call("launchpad.action", json!({ "action": "definitely-not-an-action" }))
+        .unwrap();
+    assert_eq!(
+        bad_action["error"]["message"],
+        "Unknown launchpad action",
+        "{bad_action}"
+    );
 }
 
 /// The only ticked broadcast. `sensors.stream` must deliver `{event:"sensors"}`

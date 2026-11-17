@@ -551,7 +551,23 @@ impl Backend {
                         });
                         Ok(json!({"message":"Launch request sent to Steam"}))
                     }
-                    _ => self.kwin.action(name).await,
+                    // The dashboard lives in the UI process, so these are relayed
+                    // to it instead of executed here — the same split the C++
+                    // agent makes (Api::runGestureAction: "the agent owns
+                    // devices, not windows"). Relaying before KWin is touched
+                    // keeps an action this process cannot perform from loading
+                    // the controller script.
+                    _ if name.starts_with("dashboard") => {
+                        self.broadcast("ui.action", json!({ "action": name }));
+                        Ok(json!({ "relayed": true,
+                            "message": "Dashboard action sent to the interface" }))
+                    }
+                    // The window vocabulary is listed here so an unknown name is
+                    // rejected without loading anything into KWin.
+                    "fit" | "fit-vanguard" | "restore" | "panel" | "pick" => {
+                        self.kwin.action(name).await
+                    }
+                    _ => bail!("Unknown launchpad action"),
                 }
             }
             "sensors.stream" => {
