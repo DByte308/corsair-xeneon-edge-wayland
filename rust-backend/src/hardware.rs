@@ -32,6 +32,11 @@ impl Frame {
     pub fn payload(&self) -> &[u8] {
         &self.0[1..]
     }
+    /// Whether this frame mutates panel state, derived from the command byte.
+    /// Reads (GET) are never write-gated; writes (SET) require a confirmation.
+    pub fn is_write(&self) -> bool {
+        self.0[COMMAND_OFFSET] == SET_SCREEN_PARAM
+    }
     pub fn set_payload(&mut self, source: &[u8]) -> usize {
         let size = source.len().min(PAYLOAD_SIZE);
         self.0[1..1 + size].copy_from_slice(&source[..size]);

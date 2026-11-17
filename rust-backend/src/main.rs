@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pub mod hardware;
+mod hid;
 mod kwin;
 mod model;
 use anyhow::{Context, Result, bail};
@@ -27,6 +28,7 @@ struct Request {
 }
 struct Backend {
     kwin: kwin::Kwin,
+    hid: std::sync::Mutex<Option<hid::Device>>,
     shutdown: watch::Sender<bool>,
 }
 
@@ -103,6 +105,19 @@ impl Backend {
                 "capabilities":["kwin-window-feed","edge-window-activation","window-fitting","native-window-picker","steam-launch","local-artwork"]}),
             ),
             "backend.stop" => Ok(json!({"stopping":true})),
+            "screen.hid" => {
+                // Read-only probe for the A0 HID driver. Opens the panel and
+                // reads its current screen parameters; never writes.
+                let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+                if guard.is_none() {
+                    *guard = Some(hid::Device::open().context("no accessible Edge Bragi HID device")?);
+                }
+                let device = guard.as_ref().context("hid device unavailable")?;
+                let params = device.read_screen_params()?;
+                Ok(json!({ "available": true, "path": device.path().display().to_string(),
+                    "brightness": params.brightness, "backlight": params.backlight,
+                    "contrast": params.contrast, "red": params.red, "green": params.green, "blue": params.blue }))
+            }
             "controller.ensure" => {
                 self.kwin.ensure().await?;
                 Ok(json!({"ok":true}))
@@ -265,6 +280,7 @@ async fn main() -> Result<()> {
     let (shutdown, mut signal) = watch::channel(false);
     let backend = Arc::new(Backend {
         kwin: kwin::Kwin::new(&scripts).await?,
+        hid: std::sync::Mutex::new(None),
         shutdown,
     });
     let listener = UnixListener::bind(&socket)?;
