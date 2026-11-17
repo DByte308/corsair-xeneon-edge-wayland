@@ -117,6 +117,8 @@ name = "edgeline-backend"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "futures-lite",
  "libc",
  "serde",
  "serde_json",

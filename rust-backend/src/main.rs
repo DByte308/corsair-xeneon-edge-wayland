@@ -2,6 +2,7 @@
 pub mod hardware;
 mod hid;
 mod kwin;
+mod media;
 mod model;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -29,6 +30,7 @@ struct Request {
 struct Backend {
     kwin: kwin::Kwin,
     hid: std::sync::Mutex<Option<hid::Device>>,
+    media: media::Media,
     shutdown: watch::Sender<bool>,
 }
 
@@ -66,7 +68,7 @@ fn artwork() -> Result<Value> {
     }
     Ok(json!({"image":null}))
 }
-fn base64(input: &[u8]) -> String {
+pub(crate) fn base64(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
@@ -152,6 +154,18 @@ impl Backend {
                     _ => self.kwin.action(name).await,
                 }
             }
+            "media.control" => {
+                self.media
+                    .control(parameter("action")?)
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                Ok(json!({ "ok": true }))
+            }
+            "notifications.clear" => {
+                self.media.clear_notifications();
+                Ok(json!({ "ok": true }))
+            }
+            "media.snapshot" => Ok(self.media.snapshot().await),
             _ => bail!("Unsupported Rust backend method: {}", request.method),
         }
     }
@@ -281,6 +295,7 @@ async fn main() -> Result<()> {
     let backend = Arc::new(Backend {
         kwin: kwin::Kwin::new(&scripts).await?,
         hid: std::sync::Mutex::new(None),
+        media: media::Media::new().await,
         shutdown,
     });
     let listener = UnixListener::bind(&socket)?;
