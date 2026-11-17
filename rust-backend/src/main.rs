@@ -57,6 +57,12 @@ struct Backend {
     /// new interval or a disable takes effect immediately instead of after the
     /// current sleep expires.
     streaming_wake: Notify,
+    /// The gesture recogniser, fed by the touch pump. Pure state machine: it does
+    /// no I/O, so a gesture cannot steal input from the session.
+    gestures: std::sync::Mutex<gestures::GestureRecognizer>,
+    /// Contacts that started inside the lock zone, so they stay ignored until
+    /// they lift even if they slide out of the band.
+    locked_contacts: std::sync::Mutex<std::collections::BTreeSet<i32>>,
     /// Profile a rule last applied, and the one that was active before it.
     rule_state: std::sync::Mutex<RuleBookkeeping>,
     /// The last focus report, mirrored out of the feed's async path so the
@@ -310,6 +316,168 @@ impl Backend {
             snapshot["appliedProfile"] = json!(applied);
         }
         snapshot
+    }
+
+    /// Handle a batch of touch contacts: announce each point, then let the
+    /// gesture recogniser see it.
+    ///
+    /// Mirrors `Api::onTouchPoint`: the lock zone is judged on where a contact
+    /// *started*, so a palm that lands in the reserved band and then slides out
+    /// stays ignored, and locked contacts are reported with `locked: true` (the
+    /// ripple overlay draws them differently). No lock is held across an await:
+    /// the recogniser runs to completion first and the actions run afterwards.
+    async fn on_touch_points(&self, points: Vec<touch::evdev::TouchPoint>) {
+        if points.is_empty() {
+            return;
+        }
+        let (streaming, lock_zone, bindings) = {
+            let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+            let config = touch::config::from_json(&guard.config_snapshot());
+            (guard.streaming(), config.lock_zone, config.bindings)
+        };
+        if !streaming {
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let mut actions: Vec<String> = Vec::new();
+        {
+            let mut recognizer = self.gestures.lock().unwrap_or_else(|p| p.into_inner());
+            for point in points {
+                let locked = match point.phase {
+                    touch::evdev::Phase::Begin => {
+                        if touch::config::in_lock_zone(&lock_zone, point.nx, point.ny) {
+                            self.locked_contacts
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .insert(point.id);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => self
+                        .locked_contacts
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .contains(&point.id),
+                };
+                let mut payload = json!({
+                    "id": point.id,
+                    "phase": point.phase.name(),
+                    "nx": point.nx,
+                    "ny": point.ny,
+                });
+                if locked {
+                    payload["locked"] = json!(true);
+                }
+                self.broadcast("touch.point", payload);
+
+                match point.phase {
+                    touch::evdev::Phase::Begin => {
+                        if !locked {
+                            recognizer.begin(point.id, point.nx, point.ny, now);
+                        }
+                    }
+                    touch::evdev::Phase::Update => {
+                        if !locked {
+                            recognizer.update(point.id, point.nx, point.ny, now);
+                        }
+                    }
+                    touch::evdev::Phase::End => {
+                        self.locked_contacts
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .remove(&point.id);
+                        if locked {
+                            continue;
+                        }
+                        let gesture = recognizer.end(point.id, now);
+                        if !gesture.recognized() {
+                            continue;
+                        }
+                        let name = gesture.name();
+                        let action = bindings.get(&name).cloned().unwrap_or_default();
+                        self.broadcast(
+                            "gesture",
+                            json!({
+                                "gesture": name,
+                                "contacts": gesture.contacts,
+                                "action": action,
+                            }),
+                        );
+                        if !action.is_empty() && action != "none" {
+                            actions.push(action);
+                        }
+                    }
+                }
+            }
+        }
+        for action in actions {
+            self.run_gesture_action(&action).await;
+        }
+    }
+
+    /// Perform a gesture action, exactly the set `Api::runGestureAction` handles:
+    /// the device ones are done here, the dashboard ones are relayed to the UI.
+    async fn run_gesture_action(&self, action: &str) {
+        let step = |delta: i32| {
+            let current = self.ddc.snapshot()["values"]["10"]["value"].as_i64().unwrap_or(-1);
+            let max = self.ddc.snapshot()["values"]["10"]["max"].as_i64().unwrap_or(100);
+            if current < 0 {
+                return None;
+            }
+            let next = (current + delta as i64).clamp(0, if max > 0 { max } else { 100 });
+            (next != current).then_some(next as u16)
+        };
+        match action {
+            "brightness-up" => {
+                if let Some(value) = step(10) {
+                    self.ddc.set_vcp(0x10, value);
+                }
+            }
+            "brightness-down" => {
+                if let Some(value) = step(-10) {
+                    self.ddc.set_vcp(0x10, value);
+                }
+            }
+            "blank-toggle" => {
+                if !self.ddc.ready() {
+                    return;
+                }
+                let blanked = self.ddc.snapshot()["values"]["d6"]["value"].as_i64() != Some(1);
+                // The panel power write is unsafe-gated; a gesture carries an
+                // explicit reason the way a UI click does, and nothing else may.
+                let confirmation = hid::Confirmation::approve("blank-toggle gesture");
+                if ddc::guard_unsafe_write(0xD6, Some(&confirmation)).is_ok() {
+                    self.ddc.set_vcp(0xD6, if blanked { 0x01 } else { 0x05 });
+                }
+            }
+            "profile-next" | "profile-previous" => {
+                let names = self.profiles.list();
+                if names.is_empty() {
+                    return;
+                }
+                let current = names.iter().position(|n| *n == self.profiles.active());
+                let step = if action == "profile-next" { 1 } else { -1 };
+                let count = names.len() as i32;
+                let index = match current {
+                    Some(i) => (((i as i32 + step) % count) + count) % count,
+                    None => 0,
+                };
+                if let Some(name) = names.get(index as usize) {
+                    let _ = self.apply_profile(name);
+                    self.broadcast("profiles", json!({ "active": name }));
+                }
+            }
+            // The dashboard lives in the UI process; relay it there.
+            other if other.starts_with("dashboard") => {
+                self.broadcast("ui.action", json!({ "action": other }));
+            }
+            _ => {}
+        }
     }
 
     /// Handle a focus change: announce it, then let the rules act on it. Follows
@@ -1311,6 +1479,9 @@ async fn main() -> Result<()> {
     );
     let rules = profiles::RulesStore::new(config_root.join("rules.json"));
     let (shutdown, mut signal) = watch::channel(false);
+    // Subscribed before the sender moves into the backend: the touch pump watches
+    // this to stop cleanly.
+    let shutdown_rx = shutdown.subscribe();
     // A1: DDC/CI via ddcutil. The client runs one ddcutil child at a time; a
     // background task drains the job queue after each enqueue. On bus discovery
     // it fetches capabilities and seeds the standard reads so a UI connecting
@@ -1335,6 +1506,10 @@ async fn main() -> Result<()> {
     let (focus_tx, mut focus_rx) = tokio::sync::mpsc::unbounded_channel();
     let backend = Arc::new(Backend {
         kwin: kwin::Kwin::new(&scripts, focus_tx).await?,
+        gestures: std::sync::Mutex::new(gestures::GestureRecognizer::new(
+            gestures::GestureLimits::default(),
+        )),
+        locked_contacts: std::sync::Mutex::new(std::collections::BTreeSet::new()),
         rule_state: std::sync::Mutex::new(RuleBookkeeping::default()),
         focused_mirror: std::sync::Mutex::new(None),
         hid: std::sync::Mutex::new(None),
@@ -1478,6 +1653,73 @@ async fn main() -> Result<()> {
                                 "error": format!("screen refresh failed: {error}")})
                         });
                 backend.broadcast("screen", screen);
+            }
+        });
+    }
+    // Touch contacts: read the panel's own evdev node (multitouch protocol B).
+    // XInput2 cannot see this digitizer on Wayland, which is why the C++ agent's
+    // stream never worked here. Non-grabbing: the events still reach the
+    // compositor, so touch keeps working for everything else.
+    {
+        let (touch_tx, mut touch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let stopping = shutdown_rx;
+        std::thread::Builder::new()
+            .name("touch-pump".into())
+            .spawn(move || {
+                while !*stopping.borrow() {
+                    let path = match touch::evdev::find_touch_node() {
+                        Ok(path) => path,
+                        Err(_) => {
+                            // No touchscreen (or no permission): idle and retry.
+                            std::thread::sleep(std::time::Duration::from_secs(5));
+                            continue;
+                        }
+                    };
+                    let mut reader = match touch::evdev::Reader::open(&path) {
+                        Ok(reader) => reader,
+                        Err(error) => {
+                            eprintln!("touch device {}: {error}", path.display());
+                            std::thread::sleep(std::time::Duration::from_secs(5));
+                            continue;
+                        }
+                    };
+                    let mut pollfd = libc::pollfd {
+                        fd: reader.fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    while !*stopping.borrow() {
+                        // SAFETY: one pollfd with a valid fd and a bounded timeout.
+                        let ready = unsafe { libc::poll(&mut pollfd, 1, 250) };
+                        if ready < 0 {
+                            if std::io::Error::last_os_error().kind()
+                                == std::io::ErrorKind::Interrupted
+                            {
+                                continue;
+                            }
+                            break;
+                        }
+                        if ready == 0 {
+                            continue;
+                        }
+                        match reader.poll() {
+                            Ok(points) if !points.is_empty() => {
+                                if touch_tx.send(points).is_err() {
+                                    return;
+                                }
+                            }
+                            Ok(_) => {}
+                            // Device went away: reopen, so a replug keeps working.
+                            Err(_) => break,
+                        }
+                    }
+                }
+            })
+            .ok();
+        let backend = backend.clone();
+        tokio::spawn(async move {
+            while let Some(points) = touch_rx.recv().await {
+                backend.on_touch_points(points).await;
             }
         });
     }

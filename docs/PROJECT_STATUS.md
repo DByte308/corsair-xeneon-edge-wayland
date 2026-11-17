@@ -78,9 +78,8 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
     `sensors` (streamed at the client's interval), `screen`, `touch`,
     `touchConfig`, `profiles` (`{active}`/`{changed}`), `rules`, `update`,
     `ddc`, `ddcLog`, `device` (hotplug) and the `screen` that follows it, plus
-    `focus` and `rules` when a per-app rule acts. Still missing: `touch.point` and
-    `gesture`, which need the XInput2 touch stream. `ui.action` is now emitted for
-    the
+    `focus` and `rules` when a per-app rule acts, and `touch.point`/`gesture` from
+    the panel's own touch contacts. `ui.action` is now emitted for the
     dashboard vocabulary (`dashboard-toggle`, `dashboard-page-next`): those live
     in the UI process, so `launchpad.action` relays them instead of failing as an
     unknown KWin shortcut, matching `Api::runGestureAction`. The remaining
@@ -146,8 +145,19 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   one fd because the event forwarder stayed parked owning the write half
   (`b1_sensors_stream_broadcasts_merged_snapshots`,
   `b1_closed_connections_release_their_sockets`).
-- **No event-broadcast channel for `touch.point`/`gesture`.** It needs the XInput2
-  touch stream; the `touch.stream` arm turns on nothing. `device` **is** emitted now: a 2 s probe
+- **Touch contacts come from evdev, not XInput2.** The C++ agent read the
+  digitizer over XInput2, which cannot see it on a Wayland session, so its stream
+  delivered nothing there. `touch/evdev.rs` reads the panel's own node instead
+  (multitouch protocol B: slot / tracking-id / position, flushed on SYN_REPORT),
+  normalises with the ranges the device reports, and feeds `touch.point` plus the
+  gesture recogniser — non-grabbing, so touch keeps working for everything else.
+  Locked contacts (started inside the reserved band) are reported with
+  `locked:true` and never reach the recogniser; a recognised gesture is announced
+  as `gesture` and its bound action runs (brightness ±10, blank-toggle,
+  profile-next/-previous, `dashboard*` relayed as `ui.action`). Gestures stay
+  flag-gated and off by default, and the pointer *modes* still need X11 because
+  they reconfigure xinput master devices.
+  `device` **is** emitted now: a 2 s probe
   of the hidraw node (the C++ `EdgeDevice` polling interval) compares presence,
   path, product, serial and accessibility, and on a change broadcasts `device`
   plus the refreshed `screen`, re-reading the panel's values when it came back —

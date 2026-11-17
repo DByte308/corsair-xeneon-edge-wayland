@@ -10,6 +10,7 @@
 //! Everything goes through xinput, which is injected via [`control::Runner`] so
 //! the whole subsystem can be tested offline against fixture output.
 pub mod calibration;
+pub mod evdev;
 pub mod config;
 pub mod control;
 pub mod xinput;

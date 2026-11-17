@@ -446,11 +446,16 @@ pub fn set_matrix(runner: &dyn Runner, m: &[f64]) -> bool {
 
 fn refresh(runner: &dyn Runner) -> (State, String) {
     if wayland_active() {
-        // The Rust backend does not integrate KWin's touch D-Bus surface yet;
-        // present the feature as greyed out rather than pretending to work.
+        // Touch *input* now works on Wayland: the contacts are read from the
+        // panel's own evdev node (see touch/evdev.rs), which is what feeds the
+        // ripple overlay, the lock zone and gestures. What still needs X11 is the
+        // pointer plumbing these modes reconfigure (xinput master devices), so the
+        // mode switch stays greyed out rather than pretending to work.
         return (
             State::Unsupported,
-            "Rust backend does not yet integrate KDE Wayland touch; X11 (xinput) only.".to_string(),
+            "Touch input is read from the panel's evdev node on Wayland; the pointer modes \
+             (main-cursor / own-pointer / ripple) still need an X11 session (xinput)."
+                .to_string(),
         );
     }
     if !is_x11() {
@@ -588,6 +593,13 @@ impl Touch {
     /// The switch exists so the UI can reflect the requested state, but raw
     /// touch events do not yet reach the recognizer on the real panel, so it is
     /// presented (greyed out) rather than promising live events.
+    /// Whether the caller last asked for the touch stream. The contact pump reads
+    /// this instead of deciding for itself, so the `touch.stream` RPC stays the
+    /// single owner of the switch.
+    pub fn streaming(&self) -> bool {
+        self.streaming
+    }
+
     pub fn set_streaming(&mut self, on: bool) -> Value {
         self.streaming = on;
         json!({ "streaming": self.streaming })
