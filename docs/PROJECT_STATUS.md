@@ -107,6 +107,23 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   `state.all`
   reproduces the nine C++ keys in order (`system/device/ddc/screen/touch/sensors/
   rules/color/touchConfig`).
+- **`system.info` reports discovered tools, not a guess.** The Rust backend used
+  to hardcode `/usr/bin/ddcutil`, `/usr/bin/xinput` and an invented `xinput`
+  version of `1.4`; on a non-FHS distribution (NixOS, Guix) that named tools
+  that were not there, and on this host `xinput` is not installed at all, so the
+  old value was fiction. `rust-backend/src/tools.rs` now resolves both through
+  `PATH` and asks each tool for its version, once at startup (the C++ agent
+  re-runs four processes per `system.info`). Empty means "not found" and the
+  Settings pane already renders that as `not found` with a note, so the honest
+  answer reaches the operator instead of a plausible one.
+- **One version number.** `rust-backend` was `0.1.0` while the interface, the
+  Tauri host and the packaging metadata were `0.7.0`, and
+  `page-settings.js` warns whenever the agent's `system.version` differs from
+  the interface's — so cutover would have shown the orange "the agent serving
+  the panel is another version" banner on every Settings pane. The backend is
+  now `0.7.0` and `Cargo.lock` matches. The four places that carry the version
+  (`rust-backend/Cargo.toml`, `tauri-app/Cargo.toml`, `ui/package.json`,
+  `packaging/*.metainfo.xml`) still move by hand: bump them together.
 - **Event broadcast landed** (task #17, cutover blocker). The UI's
   `api.onEvent` paths now have a Rust source: `sensors` streaming (interval
   clamped to >= 250 ms, interruptible so a re-time or disable applies at once,

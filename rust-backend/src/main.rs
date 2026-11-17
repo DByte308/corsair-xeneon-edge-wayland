@@ -9,6 +9,7 @@ mod model;
 mod touch;
 mod sensors;
 mod state;
+mod tools;
 mod profiles;
 mod updates;
 use anyhow::{Context, Result, bail};
@@ -55,6 +56,10 @@ struct Backend {
     /// new interval or a disable takes effect immediately instead of after the
     /// current sleep expires.
     streaming_wake: Notify,
+    /// External tools `system.info` reports, resolved once at startup: where
+    /// they are on `PATH` and what they say their version is. Hardcoded FHS
+    /// paths misreport any non-FHS distribution.
+    tools: tools::Tools,
 }
 
 fn uid() -> u32 {
@@ -199,21 +204,20 @@ impl Backend {
         let home = home().unwrap_or_else(|_| PathBuf::from("/"));
         let cfg = config_root().unwrap_or_else(|_| home.join(".config"));
         let hid_log = home.join(".local/share/edgeline/hid.log");
-        let ddcutil_version = self.ddc.tool_version();
         let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
         state::system_snapshot(&state::SystemInput {
             version: env!("CARGO_PKG_VERSION"),
             codename: "Cold Start",
             config_path: &home.join(".config/edgeline"),
             profiles_path: &cfg.join("profiles"),
-            ddcutil_path: "/usr/bin/ddcutil",
-            xinput_path: "/usr/bin/xinput",
+            ddcutil_path: &self.tools.ddcutil.path,
+            xinput_path: &self.tools.xinput.path,
             i2c_bus: self.ddc.i2c_bus(),
             autostart: self.profiles.autostart_enabled(),
             updates_enabled: self.updates.enabled(),
             hid_log: &hid_log,
-            ddcutil_version: &ddcutil_version,
-            xinput_version: "1.4",
+            ddcutil_version: &self.tools.ddcutil.version,
+            xinput_version: &self.tools.xinput.version,
             session_type: &session_type,
             socket: self.socket_path.as_path(),
         })
@@ -1167,6 +1171,7 @@ async fn main() -> Result<()> {
         socket_path: socket.clone(),
         broadcast: broadcast_tx,
         streaming_wake: Notify::new(),
+        tools: tools::Tools::detect(),
     });
     // The initial receiver is not needed: `broadcast` closes only when the
     // Sender is dropped, and later `subscribe()` calls work with zero

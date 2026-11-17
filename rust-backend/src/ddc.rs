@@ -392,21 +392,6 @@ impl Ddc {
         self.core.lock().unwrap().bus as i64
     }
 
-    /// Best-effort ddcutil version string (first line of `ddcutil --version`).
-    /// Empty if ddcutil is missing or fails; the UI shows it only as info.
-    pub fn tool_version(&self) -> String {
-        let core = self.core.lock().unwrap();
-        let ddc = core.ddcutil.clone();
-        drop(core);
-        if let Ok(out) = std::process::Command::new(&ddc).arg("--version").output() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            if let Some(first) = s.lines().next() {
-                return first.trim().to_string();
-            }
-        }
-        String::new()
-    }
-
     pub fn caps_empty(&self) -> bool {
         self.core.lock().unwrap().caps.features.is_empty()
     }
