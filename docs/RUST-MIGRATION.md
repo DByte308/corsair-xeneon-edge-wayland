@@ -140,6 +140,37 @@ For an intentional visible trial, quit the old UI first, then run the native
 binary without `--smoke-test`. It will use the Rust control core and the C++
 compatibility agent. Do not retire the old host until visual/touch parity passes.
 
+### Pre-flight before a controlled run
+
+```sh
+scripts/gate-c-preflight.sh
+```
+
+Read-only: it starts and stops nothing, prints what it found and exits non-zero
+when a run would not mean anything. It fails on any EdgeLine process already
+running (more than one backend against one session is not a supported state — see
+the KWin scripting note under Build/tests), on the `app-edgeline@autostart`
+service being active (it owns the old path and the C++ agent), and on the two
+sockets still answering. It prints who holds `/dev/hidraw1` as information only:
+Wine/Proton HID passthrough holds every node on a gaming desktop, hidraw is
+multi-open with per-fd queues, so that does not block or steal our reports.
+
+The C++ agent must not be running during the run: it is today's hardware owner,
+opening the panel per exchange and shelling out to `ddcutil`, so with both agents
+up they contend for the i2c bus and the `dev.edgeline.Windows` name. Stop
+`app-edgeline@autostart.service`, confirm `edgeline-agent` is gone and
+`$XDG_RUNTIME_DIR/edgeline.sock` disappeared, then start the native host:
+
+```sh
+systemctl --user stop app-edgeline@autostart.service
+EDGELINE_BACKEND=rust tauri-app/target/release/edgeline-desktop
+```
+
+Then drive the panel by hand (touch, unplug/replug, one profile, one rule) and
+finish with the rollback drill: stop it, start the old path again, confirm the
+panel still responds. That drill is what makes "documented rollback point" mean
+something if the run goes badly.
+
 ## Opt-in legacy UI trial / rollback
 
 The legacy UI can use the new services without changing any renderer files:
