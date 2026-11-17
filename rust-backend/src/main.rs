@@ -306,6 +306,9 @@ impl Backend {
             .clone()
             .unwrap_or_default();
         snapshot["focused"] = focused.to_json();
+        if let Some(reason) = self.kwin.feed_stall() {
+            snapshot["focusError"] = json!(reason);
+        }
         let applied = self
             .rule_state
             .lock()
@@ -795,7 +798,15 @@ impl Backend {
                 self.kwin.ensure_feed().await?;
                 Ok(json!({"ok":true}))
             }
-            "window.snapshot" => Ok(serde_json::to_value(self.kwin.snapshot().await?)?),
+            "window.snapshot" => {
+                let mut snapshot = serde_json::to_value(self.kwin.snapshot().await?)?;
+                // "Empty list" and "the feed never ran" look identical to a
+                // client; say which one it is.
+                if let Some(reason) = self.kwin.feed_stall() {
+                    snapshot["error"] = json!(reason);
+                }
+                Ok(snapshot)
+            }
             "window.activate" => self.kwin.activate(parameter("id")?).await,
             "gestures.config" => {
                 // Read-only gesture config snapshot. Gestures are disabled by

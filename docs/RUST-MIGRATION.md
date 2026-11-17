@@ -96,8 +96,11 @@ cargo build --locked --release --manifest-path rust-backend/Cargo.toml
 cargo fmt --manifest-path rust-backend/Cargo.toml -- --check
 cargo clippy --locked --manifest-path rust-backend/Cargo.toml --all-targets -- -D warnings
 cd ui
-# The live integration tests drive real hardware (HID, KWin, the panel) and share
-# it, so run them serially and on an otherwise idle machine:
+# Run this binary serially. It is not tidiness: above ~4 concurrent test backends
+# some KWin script deploys load and never execute (measured 2 of 5), so a parallel
+# run fails the window-feed test with a backend that cannot ever report. It also
+# drives one panel and one session bus, so an idle machine makes the timing
+# budgets meaningful:
 cargo test --locked --manifest-path rust-backend/Cargo.toml \
   --test b1_integration -- --test-threads=1
 npm test

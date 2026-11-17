@@ -25,6 +25,8 @@ struct Feed {
     connection: Connection,
     /// Set on the first report that carries the active window.
     focus_watching: Arc<std::sync::atomic::AtomicBool>,
+    /// When the last report arrived, for the stall watchdog.
+    last_report: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     /// The channel the rules handler listens on. Focus comes from the compositor
     /// because Wayland has no other place that can see every window (the C++
     /// agent refused there).
@@ -78,6 +80,8 @@ impl Feed {
                 "Only KWin may publish windows".into(),
             ));
         }
+        *self.last_report.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(std::time::Instant::now());
         let snapshot = Snapshot::parse(payload)
             .map_err(|error| zbus::fdo::Error::InvalidArgs(error.to_string()))?;
         *self.snapshot.write().await = snapshot;
@@ -109,6 +113,12 @@ pub struct Kwin {
     /// Whether a focus report has arrived from the feed, i.e. whether rules can
     /// actually arm. `rules.get` reports this as `watching`.
     focus_watching: Arc<std::sync::atomic::AtomicBool>,
+    /// When the window feed was last asked for, and when it last reported. A
+    /// KWin script can load and never execute (measured: above ~4 concurrent
+    /// deploys, 2 of 5 silently did nothing), and without these two stamps the
+    /// result is an empty window list forever with no error anywhere.
+    feed_started: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    last_report: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl Kwin {
@@ -122,6 +132,8 @@ impl Kwin {
         let snapshot = Arc::new(RwLock::new(Snapshot::default()));
         let owner = Arc::new(RwLock::new(String::new()));
         let focus_watching = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let feed_started = Arc::new(std::sync::Mutex::new(None));
+        let last_report = Arc::new(std::sync::Mutex::new(None));
         connection
             .object_server()
             .at(
@@ -131,6 +143,7 @@ impl Kwin {
                     owner: owner.clone(),
                     connection: connection.clone(),
                     focus_watching: focus_watching.clone(),
+                    last_report: last_report.clone(),
                     focus_events,
                 },
             )
@@ -148,6 +161,8 @@ impl Kwin {
             gate: Mutex::new(()),
             picker: Mutex::new(()),
             focus_watching,
+            feed_started: feed_started.clone(),
+            last_report: last_report.clone(),
         };
         // Scripts a previous process left loaded would keep their bus names (and
         // KWin would hand back the old script for a reused tag), so clear them
@@ -312,6 +327,16 @@ impl Kwin {
             if kind == "controller" && !include_controller {
                 continue;
             }
+            if kind == "overview" {
+                // Stamp the *first* request only. Re-stamping on every
+                // `window.snapshot` would restart the clock each time and the
+                // stall would never become visible.
+                let mut started = self.feed_started.lock().unwrap_or_else(|p| p.into_inner());
+                if started.is_none() {
+                    *started = Some(std::time::Instant::now());
+                }
+                drop(started);
+            }
             let tag = format!("edgeline-rust-{kind}-{}", std::process::id());
             let loaded: bool = self
                 .scripting()
@@ -347,6 +372,19 @@ impl Kwin {
             scripts.lock().await.retain(|name| name != &tag);
         });
         Ok(())
+    }
+
+    /// Why the window feed is not delivering, if it was asked for and stayed
+    /// silent. `None` means healthy (or not asked for yet).
+    ///
+    /// A KWin script deploy can succeed and never run — `loadScript` returns an id,
+    /// `run` returns Ok, and no report ever arrives. That is indistinguishable from
+    /// an empty desktop unless it is reported, and it is exactly the failure a
+    /// stale tag after a crash produces, so it is surfaced instead of left silent.
+    pub fn feed_stall(&self) -> Option<String> {
+        let started = *self.feed_started.lock().unwrap_or_else(|p| p.into_inner());
+        let last = *self.last_report.lock().unwrap_or_else(|p| p.into_inner());
+        stall_reason(started, last, std::time::Instant::now())
     }
 
     pub async fn snapshot(&self) -> Result<Snapshot> {
@@ -438,5 +476,56 @@ impl Kwin {
                 let _: zbus::Result<bool> = proxy.call("unloadScript", &(tag.as_str(),)).await;
             }
         }
+    }
+}
+
+/// Why the feed counts as stalled, as a pure decision so it can be tested.
+///
+/// `None` = healthy: not requested yet, a report arrived since the request, or the
+/// request is younger than [`FEED_STALL_AFTER`].
+pub fn stall_reason(
+    started: Option<std::time::Instant>,
+    last_report: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Option<String> {
+    const FEED_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
+    let started = started?;
+    if last_report.is_some_and(|last| last >= started) {
+        return None;
+    }
+    let waited = now.saturating_duration_since(started);
+    if waited < FEED_STALL_AFTER {
+        return None;
+    }
+    Some(format!(
+        "the KWin window feed was started {} s ago and has not reported; the KWin script \
+         loaded but did not run (a stale script tag after a crash is the usual cause)",
+        waited.as_secs()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_silent_feed_is_only_a_stall_when_it_was_asked_for_and_waited() {
+        let now = Instant::now();
+        let six_ago = now.checked_sub(Duration::from_secs(6));
+        let two_ago = now.checked_sub(Duration::from_secs(2));
+
+        // Never asked: nothing to report.
+        assert!(stall_reason(None, None, now).is_none());
+        // Asked, still inside the grace period.
+        assert!(stall_reason(two_ago, None, now).is_none());
+        // Asked over 5 s ago and nothing arrived: this is the silent KWin deploy.
+        let reason = stall_reason(six_ago, None, now).expect("stall");
+        assert!(reason.contains("has not reported"), "{reason}");
+        // A report since the request means the feed is alive.
+        assert!(stall_reason(six_ago, Some(now), now).is_none());
+        // A report from before the request does not count.
+        let old_report = now.checked_sub(Duration::from_secs(30));
+        assert!(stall_reason(six_ago, old_report, now).is_some());
     }
 }

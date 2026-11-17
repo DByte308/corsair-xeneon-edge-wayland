@@ -190,7 +190,12 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   focused window and the profile a rule applied; `restoreOnUnfocus`, the fallback
   profile and "never churn an already-active profile" follow `Api::onFocusChanged`
   step for step, and a rule applies profiles through the same path a click takes.
-  Two things to know before trusting it: the focus feed only exists once
+  A KWin script deploy can load and never execute — measured: with five backends
+  deploying at once, two never reported while `window.start` answered `{"ok":true}`
+  for all five, and a stale tag after a crash does the same. The feed now stamps
+  when it was first asked for, and after 5 s of silence `window.snapshot.error` and
+  `rules.get.focusError` say so instead of leaving an empty list that looks like an
+  empty desktop. Two things to know before trusting it: the focus feed only exists once
   `window.start`/`controller.ensure` has deployed the KWin overview script (the C++
   agent started its watcher unconditionally), and `watching` follows the C++
   meaning — it stays true if KWin stops reporting, so a silent feed looks armed.
