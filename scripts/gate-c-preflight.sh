@@ -37,9 +37,14 @@ ok() { printf '  ok    %s\n' "$*"; }
 bad() { printf '  FAIL  %s\n' "$*"; problems=$((problems + 1)); }
 info() { printf '  ..    %s\n' "$*"; }
 
-# Processes whose argv[0] is one of ours. Scanned through /proc rather than
-# `pgrep -f`, because a pattern on the command line would match this script's own
-# shell invocation and report a false positive.
+# Processes that belong to EdgeLine. Scanned through /proc rather than `pgrep -f`,
+# because a pattern on the command line would match this script's own invocation.
+#
+# Both argv[0] *and* the command line are matched: Electron rewrites argv[0] to the
+# whole command line, so its basename is the app directory ("ui") and a basename
+# test misses the UI entirely — which is exactly the process the operator has to
+# quit first. The children (renderer, gpu, zygote) keep their parent's config dir,
+# so they are caught by the second pattern.
 edgeline_processes() {
     for entry in /proc/[0-9]*/cmdline; do
         pid=${entry#/proc/}
@@ -47,13 +52,33 @@ edgeline_processes() {
         [ "$pid" = "$$" ] && continue
         [ "$pid" = "$PPID" ] && continue
         argv0=$(tr '\0' '\n' < "$entry" 2>/dev/null | head -n 1)
+        command=$(tr '\0' ' ' < "$entry" 2>/dev/null | cut -c1-300)
+        name=""
         case "${argv0##*/}" in
-            edgeline-backend|edgeline-desktop|edgeline-agent|edgeline-reserve|edgeline-ui)
-                printf '%s\t%s\n' "$pid" "$argv0"
+            edgeline-backend|edgeline-desktop|edgeline-agent|edgeline-reserve)
+                name="${argv0##*/}"
                 ;;
         esac
+        if [ -z "$name" ]; then
+            case "$command" in
+                *--class=edgeline*) name="electron (EdgeLine UI)" ;;
+                */.config/edgeline*) name="electron child (EdgeLine UI)" ;;
+            esac
+        fi
+        [ -n "$name" ] && printf '%s\t%s\n' "$pid" "$name"
     done
 }
+
+for tool in systemctl tr readlink; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        say "cannot check: '$tool' is missing"
+        exit 2
+    fi
+done
+if [ ! -d /proc/self ]; then
+    say "cannot check: /proc is not available"
+    exit 2
+fi
 
 say "Gate C pre-flight ($(date '+%Y-%m-%d %H:%M'))"
 say ""
@@ -65,7 +90,8 @@ if [ -n "$running" ]; then
     printf '%s\n' "$running" | while IFS="$(printf '\t')" read -r pid argv0; do
         printf '          %s  %s\n' "$pid" "$argv0"
     done
-    info "stop them first: systemctl --user stop 'app-edgeline@*.service'"
+    info "quit EdgeLine from the tray first, then: systemctl --user stop 'app-edgeline@*.service'"
+    info "(stopping the unit alone leaves the UI running, and the UI starts an agent again)"
 else
     ok "none"
 fi
