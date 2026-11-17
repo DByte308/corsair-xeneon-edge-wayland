@@ -170,13 +170,13 @@ mod tests {
             accessible: false,
             path: PathBuf::from("/dev/hidraw1"),
             product: "XENEON EDGE".into(),
-            serial: "213826425656".into(),
+            serial: "SYNTH0000000001".into(),
         };
         let v = device_snapshot(&info);
         assert_eq!(v["present"], true);
         assert_eq!(v["accessible"], false);
         assert_eq!(v["path"], "/dev/hidraw1");
         assert_eq!(v["product"], "XENEON EDGE");
-        assert_eq!(v["serial"], "213826425656");
+        assert_eq!(v["serial"], "SYNTH0000000001");
     }
 }

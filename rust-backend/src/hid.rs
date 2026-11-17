@@ -627,7 +627,7 @@ mod tests {
         std::fs::create_dir_all(target.join("device")).unwrap();
         std::fs::write(
             target.join("device/uevent"),
-            "HID_NAME=CORSAIR XENEON EDGE\nHID_UNIQ=213826425656\n",
+            "HID_NAME=CORSAIR XENEON EDGE\nHID_UNIQ=SYNTH0000000001\n",
         )
         .unwrap();
         std::os::unix::fs::symlink(&target, class.join("hidraw7")).unwrap();
@@ -659,7 +659,7 @@ mod tests {
         let presence = probe_in(&class);
         assert!(presence.present, "the fixture node must be found");
         assert_eq!(presence.product, "CORSAIR XENEON EDGE");
-        assert_eq!(presence.serial, "213826425656");
+        assert_eq!(presence.serial, "SYNTH0000000001");
         assert!(presence.path.starts_with("/dev/"), "got {:?}", presence.path);
         // The instance counter is what makes a fast replug on the same hidraw
         // number visible to the watcher; without it the comparator sees nothing.
@@ -756,7 +756,7 @@ mod tests {
             accessible: true,
             path: PathBuf::from("/dev/hidraw7"),
             product: "CORSAIR XENEON EDGE".into(),
-            serial: "213826425656".into(),
+            serial: "SYNTH0000000001".into(),
             instance: "0003:1B1C:1D0D.0002".into(),
         };
         assert_eq!(a.clone(), a, "an unchanged device is not an event");
