@@ -65,6 +65,17 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
 
 ### Honest gaps / limitations
 
+- **`state.all` is not served by the Rust backend.** The UI calls it on every
+  connect (`app.js refreshAll`, `dashboard.js start`, `main.js primeTrayState`).
+  Today this is masked because both hosts send generic RPC to the C++ agent
+  socket (`edgeline.sock`); the Rust backend socket (`edgeline-rust/backend.sock`)
+  only serves core/launchpad/window methods. **Cutover-critical: must be ported
+  before B3/B4** (when the C++ agent is retired).
+- **No event-broadcast channel.** The C++ agent pushes `ddc`, `screen`, `touch`,
+  `sensors`, `ddcLog`, `device`, `rules`, `touchConfig` events; the Rust backend
+  is request/response only and has no per-connection writer registry to push to.
+  Dashboard tiles and live updates depend on `api.onEvent`. Also masked today by
+  the C++ agent, and cutover-critical.
 - Rust backend still reports `hardware: "legacy C++ agent (not migrated)"` in
   `backend.info` — the C++ agent is still the running hardware owner for the
   Electron host; the Rust backend is invoked alongside it during dev. The
@@ -78,6 +89,13 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   writes HID-exposed fields). Documented in ARCHITECTURE_AND_MIGRATION.
 - Gestures deliberately disabled; no claim of gesture functionality.
 - `cargo clippy` / `cargo fmt` are not installed on this host; not claimed.
+
+> Audit note (2026-11-18): method counts drifting across docs. The Rust backend
+> serves **44** dispatch arms; the C++ agent registers **39** calls in Api.cpp;
+> earlier docs said 41. The authoritative live count for the Rust backend is the
+> `match` arms in `rust-backend/src/main.rs` (44). The two additional arms vs the
+> frontend contract are read-only diagnostics `media.snapshot` and
+> `gestures.config`. `agent.quit` is obsolete (superseded by `backend.stop`).
 
 ### Next recommended step
 
