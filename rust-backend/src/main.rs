@@ -3,6 +3,7 @@ pub mod hardware;
 mod hid;
 mod kwin;
 mod model;
+mod sensors;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -29,6 +30,7 @@ struct Request {
 struct Backend {
     kwin: kwin::Kwin,
     hid: std::sync::Mutex<Option<hid::Device>>,
+    sensors: std::sync::Mutex<sensors::SensorSource>,
     shutdown: watch::Sender<bool>,
 }
 
@@ -151,6 +153,78 @@ impl Backend {
                     }
                     _ => self.kwin.action(name).await,
                 }
+            }
+            "sensors.stream" => {
+                let enabled = request
+                    .params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let interval_ms = request
+                    .params
+                    .get("intervalMs")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1000) as u32;
+                let mut guard =
+                    self.sensors.lock().unwrap_or_else(|p| p.into_inner());
+                guard.set_streaming(enabled, interval_ms);
+                Ok(json!({ "streaming": enabled }))
+            }
+            "sensors.interfaces" => Ok(sensors::interfaces_json(
+                &self.sensors.lock().unwrap_or_else(|p| p.into_inner()),
+            )),
+            "sensors.selectInterface" => {
+                let name = request
+                    .params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !name.is_empty() {
+                    let found = sensors::enumerate_interfaces()
+                        .iter()
+                        .any(|n| n.name == name);
+                    if !found {
+                        bail!("no interface named {}", name);
+                    }
+                }
+                let mut guard =
+                    self.sensors.lock().unwrap_or_else(|p| p.into_inner());
+                guard.set_net_selection(name.to_string());
+                Ok(sensors::interfaces_json(&guard))
+            }
+            "sensors.gpus" => {
+                let mut guard =
+                    self.sensors.lock().unwrap_or_else(|p| p.into_inner());
+                let gpus = guard.enumerate_gpus();
+                let arr: Vec<Value> = gpus.iter().map(sensors::gpu_json).collect();
+                let selected = guard.gpu_selection().to_vec();
+                Ok(json!({ "gpus": arr, "selected": selected }))
+            }
+            "sensors.selectGpus" => {
+                let v = request
+                    .params
+                    .get("ids")
+                    .context("'ids' must be an array")?;
+                let ids = v.as_array().context("'ids' must be an array")?;
+                let asked: Vec<String> = ids
+                    .iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let mut guard =
+                    self.sensors.lock().unwrap_or_else(|p| p.into_inner());
+                let all = guard.enumerate_gpus();
+                let arr: Vec<Value> = all.iter().map(sensors::gpu_json).collect();
+                let keep: Vec<String> = all
+                    .iter()
+                    .filter(|g| asked.contains(&g.id))
+                    .map(|g| g.id.clone())
+                    .collect();
+                if !asked.is_empty() && keep.is_empty() {
+                    bail!("none of those GPUs are in this machine");
+                }
+                guard.set_gpu_selection(keep.clone());
+                Ok(json!({ "gpus": arr, "selected": keep }))
             }
             _ => bail!("Unsupported Rust backend method: {}", request.method),
         }
@@ -281,6 +355,7 @@ async fn main() -> Result<()> {
     let backend = Arc::new(Backend {
         kwin: kwin::Kwin::new(&scripts).await?,
         hid: std::sync::Mutex::new(None),
+        sensors: std::sync::Mutex::new(sensors::SensorSource::new()),
         shutdown,
     });
     let listener = UnixListener::bind(&socket)?;
