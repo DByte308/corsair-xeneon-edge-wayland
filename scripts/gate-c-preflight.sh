@@ -28,6 +28,7 @@
 set -u
 
 expect=""
+probe=0
 case "${1:-}" in
     --expect)
         expect="${2:-}"
@@ -37,6 +38,10 @@ case "${1:-}" in
         esac
         ;;
     "") ;;
+    --probe)
+        probe=1
+        expect=""
+        ;;
     -h|--help)
         printf 'usage: %s [--expect rust|agent]\n' "$0"
         printf '  --expect rust   after starting the host with EDGELINE_BACKEND=rust,\n'
@@ -70,6 +75,8 @@ edgeline_processes() {
         pid=${pid%/cmdline}
         [ "$pid" = "$$" ] && continue
         [ "$pid" = "$PPID" ] && continue
+        # A process can exit between the glob and the read; that is not an error.
+        [ -r "$entry" ] || continue
         argv0=$(tr '\0' '\n' < "$entry" 2>/dev/null | head -n 1)
         command=$(tr '\0' ' ' < "$entry" 2>/dev/null | cut -c1-300)
         name=""
@@ -99,7 +106,17 @@ if [ ! -d /proc/self ]; then
     exit 2
 fi
 
-say "Gate C pre-flight ($(date '+%Y-%m-%d %H:%M'))"
+if [ "$probe" -eq 1 ]; then
+    # Capability only: the other sections judge the running state, which is not
+    # what was asked here, and a red verdict from a check nobody ran is how a
+    # preflight gets ignored.
+    say "Gate C capability probe ($(date '+%Y-%m-%d %H:%M'))"
+    state_sections=0
+else
+    say "Gate C pre-flight ($(date '+%Y-%m-%d %H:%M'))"
+    state_sections=1
+fi
+if [ "$state_sections" -eq 1 ]; then
 say ""
 
 say "1. EdgeLine processes"
@@ -153,7 +170,13 @@ fi
 say ""
 say "3. Sockets"
 if [ -S "$socket" ]; then
-    bad "$socket exists: a Rust backend is already running on the production socket"
+    if [ "$expect" = "rust" ]; then
+        ok "$socket exists: the Rust backend this host started"
+    else
+        bad "$socket exists: a Rust backend is already running on the production socket"
+    fi
+elif [ "$expect" = "rust" ]; then
+    bad "$socket absent: cutover mode expects the host's own Rust backend"
 else
     ok "$socket absent"
 fi
@@ -179,8 +202,67 @@ if [ -n "$holders" ]; then
 else
     info "nobody holds /dev/hidraw1"
 fi
+fi  # end of the state sections
 
+if [ "$probe" -eq 1 ]; then
+    # Every method the renderer actually calls, against a throwaway backend. This
+    # is the check that separates "cutover" from "cutover that works", and it is in
+    # the script so it can be repeated rather than remembered.
+    say ""
+    say "5. Capability probe (renderer methods against a throwaway backend)"
+    probe_dir=$(mktemp -d)
+    chmod 700 "$probe_dir"
+    backend="rust-backend/target/release/edgeline-backend"
+    if [ ! -x "$backend" ]; then
+        bad "no $backend; build it first"
+    else
+        "$backend" --socket "$probe_dir/b.sock" > "$probe_dir/out.log" 2>&1 &
+        probe_pid=$!
+        i=0
+        while [ ! -S "$probe_dir/b.sock" ] && [ "$i" -lt 100 ]; do
+            i=$((i + 1))
+            sleep 0.05
+        done
+        methods=$(grep -rhoE "api\.call\('[a-zA-Z.]+'|rpc\('[a-zA-Z.]+'" ui/renderer/*.js ui/main.js 2>/dev/null \
+            | sed "s/.*('//" | sort -u)
+        missing=0
+        for method in $methods; do
+            reply=$(printf '{"id":1,"method":"%s","params":{}}\n' "$method" \
+                | timeout 10 python3 -c '
+import json, socket, sys
+method = sys.argv[1]
+s = socket.socket(socket.AF_UNIX); s.settimeout(10)
+s.connect(sys.argv[2]); f = s.makefile("rw")
+f.write(json.dumps({"id": 1, "method": method, "params": {}}) + "\n"); f.flush()
+while True:
+    line = f.readline()
+    if not line: print("no reply"); break
+    try: value = json.loads(line)
+    except Exception: continue
+    if "event" in value: continue
+    print("missing" if value.get("error", {}).get("message", "").startswith("Unknown method") else "ok")
+    break
+' "$method" "$probe_dir/b.sock")
+            case "$reply" in
+                ok) ;;
+                *) missing=$((missing + 1)); printf '          %-32s %s\n' "$method" "$reply" ;;
+            esac
+        done
+        kill "$probe_pid" 2>/dev/null
+        wait "$probe_pid" 2>/dev/null
+        if [ "$missing" -eq 0 ]; then
+            ok "$(printf '%s\n' "$methods" | wc -l) renderer methods served"
+        else
+            bad "$missing renderer method(s) missing from the Rust backend (listed above)"
+        fi
+    fi
+    rm -rf "$probe_dir"
+fi
 say ""
+if [ "$problems" -eq 0 ] && [ "$state_sections" -eq 0 ]; then
+    ok "capability probe passed"
+    exit 0
+fi
 if [ "$problems" -eq 0 ]; then
     ok "ready: start the Rust backend and drive the panel by hand"
     say ""

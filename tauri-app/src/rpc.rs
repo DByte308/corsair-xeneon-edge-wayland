@@ -17,6 +17,17 @@ pub fn runtime() -> Result<PathBuf> {
     ))
 }
 pub async fn call(socket: &Path, method: &str, params: Value) -> Result<Value> {
+    call_with_context(socket, method, params, Value::Null).await
+}
+
+/// [`call`] with a `context` field, which the host bridge uses for the facts only
+/// the host knows (its version, the display list, which app windows are open).
+pub async fn call_with_context(
+    socket: &Path,
+    method: &str,
+    params: Value,
+    context: Value,
+) -> Result<Value> {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let timeout = if method == "launchpad.action" && params["action"] == "pick" {
         130
@@ -31,7 +42,12 @@ pub async fn call(socket: &Path, method: &str, params: Value) -> Result<Value> {
         if stream.peer_cred()?.uid() != expected.uid() {
             bail!("Backend socket belongs to another user");
         }
-        let mut request = serde_json::to_vec(&json!({"id":id,"method":method,"params":params}))?;
+        let mut request = serde_json::to_vec(&json!({
+            "id": id,
+            "method": method,
+            "params": params,
+            "context": context,
+        }))?;
         if request.len() > 1024 * 1024 {
             bail!("Backend request exceeds 1 MiB");
         }

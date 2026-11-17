@@ -153,14 +153,18 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   agent process, no `edgeline.sock`, device card and DDC log populated from Rust,
   `ddcLog` events reaching the webview. Every renderer method the UI calls is served
   by the Rust backend (34 checked).
-- **The built-in apps need host methods the Tauri host does not have.** `apps.list`,
-  `clipboard.read`, `windows.list`, `media.nowPlaying`, `system.telemetry`,
-  `kdeconnect.devices` and `diagnostics.read` are implemented in the Electron host
-  (`APP_METHODS` in `ui/main.js`) and in neither backend — the agent never had them
-  either. So app-drawer, clipboard, snap, now-playing, system-monitor, phone and
-  doctor are broken in the native host today, independently of the cutover. Either
-  port that table into `tauri-app` or declare those apps out of gate-C scope; do not
-  discover it during the acceptance run.
+- **Host methods: six ported, one still missing because the host has no app
+  windows.** The methods the bundled apps call are host responsibilities
+  (`APP_METHODS` in `ui/main.js`), not backend ones. `ui/host-bridge.js` now serves
+  `apps.list`, `clipboard.read`, `media.nowPlaying`, `system.telemetry`,
+  `kdeconnect.devices`, `windows.list` and `diagnostics.read` over its own socket,
+  reusing the tested `ui/host/*` modules, and the Tauri host starts it and routes
+  those methods there — so clipboard, now-playing, system-monitor, phone, doctor and
+  the drawer's app list behave as in the Electron host. `apps.launch` is deliberately
+  not implemented: the native host still has only the main, home, settings, dashboard
+  and taskbar windows, so there is nothing to launch an app into. Snapping and the
+  app windows themselves therefore stay Electron-only until a Tauri app host exists;
+  that is the next slice, not a gate-C surprise.
 - **Touch contacts come from evdev, not XInput2.** The C++ agent read the
   digitizer over XInput2, which cannot see it on a Wayland session, so its stream
   delivered nothing there. `touch/evdev.rs` reads the panel's own node instead

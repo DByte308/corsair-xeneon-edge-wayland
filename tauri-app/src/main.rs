@@ -20,6 +20,12 @@ const BRIDGE: &str = include_str!("../frontend-bridge.js");
 struct Host {
     core: PathBuf,
     agent: PathBuf,
+    /// The Node host-bridge socket: the app-facing methods that are neither
+    /// device nor compositor concerns (registry, clipboard, MPRIS, telemetry,
+    /// KDE Connect, window decoration, diagnostics). It reuses the tested
+    /// `ui/host/*` modules, so the native host answers them exactly as the
+    /// Electron host does instead of refusing them.
+    apps: PathBuf,
     config: PathBuf,
     prefs: Mutex<Value>,
     children: Mutex<Vec<Child>>,
@@ -45,6 +51,25 @@ struct Host {
     suspended: Mutex<Vec<String>>,
     deck: tokio::sync::Mutex<Option<tablet::Deck>>,
 }
+/// Methods the bundled apps call that belong to the *host*, not to the device
+/// backend. Served by `ui/host-bridge.js` over its own socket.
+///
+/// `apps.launch` is deliberately absent: the native host has no app windows yet
+/// (only the main, home, settings, dashboard and taskbar windows), so launching
+/// cannot work and pretending otherwise would be worse than refusing.
+const APP_HOST_METHODS: [&str; 6] = [
+    "apps.list",
+    "clipboard.read",
+    "media.nowPlaying",
+    "system.telemetry",
+    "kdeconnect.devices",
+    "windows.list",
+];
+
+fn is_app_host_method(method: &str) -> bool {
+    APP_HOST_METHODS.contains(&method) || method == "diagnostics.read"
+}
+
 /// Whether `rpc` goes to the Rust backend and the agent stays down.
 ///
 /// Read once at startup from `EDGELINE_BACKEND=rust` — deliberately the *same*
@@ -134,6 +159,7 @@ impl Host {
         Ok(Self {
             core: rpc::runtime()?.join("edgeline-rust/backend.sock"),
             agent: rpc::runtime()?.join("edgeline.sock"),
+            apps: rpc::runtime()?.join("edgeline-host.sock"),
             config,
             prefs: Mutex::new(prefs),
             children: Mutex::new(Vec::new()),
@@ -237,6 +263,39 @@ impl Host {
             self.core.display(),
             self.agent.display()
         );
+    }
+
+    /// Start the Node host bridge if it is not already listening.
+    fn ensure_host_bridge(&self, app: &AppHandle) -> Result<()> {
+        if self.smoke || std::os::unix::net::UnixStream::connect(&self.apps).is_ok() {
+            return Ok(());
+        }
+        let bundled = app.path().resource_dir()?.join("host-bridge.js");
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ui/host-bridge.js");
+        let script = if bundled.exists() { bundled } else { source };
+        if !script.exists() {
+            bail!("host bridge script is missing at {}", script.display());
+        }
+        let node = std::env::var_os("EDGELINE_NODE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("node"));
+        let child = Command::new(node)
+            .arg(&script)
+            .arg(&self.apps)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .context("cannot start the host bridge (is node installed?)")?;
+        self.children.lock().unwrap().push(child);
+        // Wait briefly so the first app call does not race the listener.
+        for _ in 0..60 {
+            if self.apps.exists() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        bail!("host bridge did not create {}", self.apps.display())
     }
 
     fn ensure_agent(&self, app: &AppHandle) -> Result<()> {
@@ -446,6 +505,12 @@ async fn dispatch(
             {
                 bail!("Mutation RPC disabled during smoke testing");
             }
+            if is_app_host_method(name) {
+                // Host responsibilities, answered by the bridge in both modes so
+                // the bundled apps behave the same whichever backend serves the
+                // panel.
+                return host_bridge_call(&app, &state, name, &params).await;
+            }
             // The cutover switch: the data plane is the Rust backend when asked for
             // it, otherwise the agent that still owns it today.
             let socket = if state.core_only {
@@ -577,6 +642,42 @@ async fn dispatch(
         _ => bail!("Unsupported host method: {method}"),
     }
 }
+/// Facts only the host has: which app windows are open, and the host block the
+/// diagnostics schema expects. Assembled here rather than in the bridge, so the
+/// bridge stays a thin adapter over the tested `ui/host/*` modules.
+fn host_bridge_context(app: &AppHandle, state: &Host) -> Value {
+    let open_apps: Vec<String> = Vec::new();
+    let edge = edge(app).ok().flatten();
+    let version = app.package_info().version.to_string();
+    json!({
+        "openApps": open_apps,
+        "diagnostics": {
+            "railWidth": 96,
+            "edgeId": edge.as_ref().and_then(|e| e["id"].as_str()).map(str::to_string),
+            "host": {
+                "runtime": "Tauri",
+                "version": version,
+                "pid": std::process::id(),
+                "session": std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into()),
+                "desktop": std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".into()),
+                "backend": if state.core_only { "rust" } else { "agent" },
+                "safeMode": false,
+                "rendering": std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").unwrap_or_default(),
+            },
+        },
+    })
+}
+
+async fn host_bridge_call(
+    app: &AppHandle,
+    state: &Host,
+    method: &str,
+    params: &Value,
+) -> Result<Value> {
+    let context = host_bridge_context(app, state);
+    rpc::call_with_context(&state.apps, method, params["params"].clone(), context).await
+}
+
 fn agent_events(app: AppHandle, state: Arc<Host>) {
     tauri::async_runtime::spawn(async move {
         while !state.quitting.load(Ordering::Relaxed) {
@@ -735,6 +836,10 @@ fn main() {
             let handle = app.handle().clone();
             setup_state.announce_backend();
             setup_state.ensure_agent(&handle)?;
+            if let Err(error) = setup_state.ensure_host_bridge(&handle) {
+                // App-only surface: the panel and the device pages work without it.
+                eprintln!("host bridge unavailable: {error}");
+            }
             agent_events(handle.clone(), setup_state.clone());
             if smoke {
                 create_window(
