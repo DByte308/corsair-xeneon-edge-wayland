@@ -7,6 +7,7 @@ mod media;
 mod model;
 mod touch;
 mod sensors;
+mod profiles;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -38,6 +39,8 @@ struct Backend {
     sensors: std::sync::Mutex<sensors::SensorSource>,
     media: media::Media,
     shutdown: watch::Sender<bool>,
+    profiles: profiles::ProfileStore,
+    rules: profiles::RulesStore,
 }
 
 fn uid() -> u32 {
@@ -48,6 +51,9 @@ fn home() -> Result<PathBuf> {
     Ok(PathBuf::from(
         std::env::var_os("HOME").context("HOME is not set")?,
     ))
+}
+fn config_root() -> Result<PathBuf> {
+    Ok(home()?.join(".config").join("edgeline"))
 }
 fn artwork() -> Result<Value> {
     for root in [
@@ -95,6 +101,42 @@ pub(crate) fn base64(input: &[u8]) -> String {
         });
     }
     output
+}
+fn color_snapshot() -> Value {
+    let devices = profiles::color::read_color_devices();
+    let edge = profiles::color::find_edge(&devices);
+    match edge {
+        None => json!({
+            "available": !devices.is_empty(),
+            "reason": if devices.is_empty() {
+                "colord is not running, or colormgr is not installed"
+            } else {
+                "colord does not know this panel as a display device"
+            },
+        }),
+        Some(edge) => {
+            let profiles: Vec<Value> = edge
+                .profiles
+                .iter()
+                .map(|pr| {
+                    json!({ "id": pr.id, "filename": pr.filename, "autoEdid": pr.is_auto_edid() })
+                })
+                .collect();
+            let default = edge
+                .default_profile()
+                .map(|d| d.filename.clone())
+                .unwrap_or_default();
+            json!({
+                "available": true,
+                "deviceId": edge.device_id,
+                "model": edge.model,
+                "output": edge.xrandr_name,
+                "profiles": profiles,
+                "defaultProfile": default,
+                "calibrated": edge.has_calibration(),
+            })
+        }
+    }
 }
 impl Backend {
     async fn dispatch(&self, request: &Request) -> Result<Value> {
@@ -400,8 +442,213 @@ impl Backend {
                 Ok(json!({ "ok": true }))
             }
             "media.snapshot" => Ok(self.media.snapshot().await),
+            "settings.set" => {
+                // Autostart is owned by the interface; the agent is headless so
+                // "start on login" must not point at it, exactly as the C++ agent.
+                bail!("nothing here to set; autostart is owned by the interface")
+            }
+            "profiles.list" => {
+                let mut arr = Vec::new();
+                for name in self.profiles.list() {
+                    let body = self.profiles.load(&name);
+                    arr.push(json!({"name": name, "summary": self.profiles.summary(&body)}));
+                }
+                Ok(json!({"profiles": arr, "active": self.profiles.active(),
+                    "directory": self.profiles.directory().display().to_string()}))
+            }
+            "profiles.get" => {
+                let name = parameter("name")?;
+                if !self.profiles.exists(name) {
+                    bail!("no profile called '{name}'");
+                }
+                Ok(self.profiles.load(name))
+            }
+            "profiles.save" => {
+                let name = parameter("name")?;
+                let overwrite = request
+                    .params
+                    .get("overwrite")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !overwrite && self.profiles.exists(name) {
+                    bail!("'{name}' already exists");
+                }
+                // Refuse a partial snapshot: the HID read must report the
+                // panel's current picture values before we write them down.
+                let body = self.capture_profile_body()?;
+                let saved = self.profiles.save(name, &body)?;
+                self.profiles.set_active(name);
+                Ok(json!({"name": saved}))
+            }
+            "profiles.delete" => {
+                let name = parameter("name")?;
+                self.profiles.remove(name)?;
+                Ok(json!({"deleted": true}))
+            }
+            "profiles.rename" => {
+                let from = parameter("from")?;
+                let to = parameter("to")?;
+                self.profiles.rename(from, to)?;
+                Ok(json!({"renamed": true}))
+            }
+            "profiles.apply" => {
+                let name = parameter("name")?;
+                self.apply_profile(name)
+            }
+            "rules.get" => {
+                let cfg = profiles::rules_from_json(&self.rules.load());
+                let mut snapshot = profiles::rules_to_json(&cfg);
+                // The Rust backend has no X11 focus watcher, so rules cannot be
+                // armed the way the C++ agent arms them; `watching` is false.
+                snapshot["watching"] = json!(false);
+                snapshot["path"] = json!(self.rules.path().display().to_string());
+                Ok(snapshot)
+            }
+            "rules.set" => {
+                // Validate against what was sent, not against what fromJson kept:
+                // fromJson silently drops a rule with no pattern, so such a rule
+                // would disappear with the save reporting success.
+                if let Some(arr) = request.params.get("rules").and_then(Value::as_array) {
+                    for (i, value) in arr.iter().enumerate() {
+                        let o = value
+                            .as_object()
+                            .map(|m| Value::Object(m.clone()))
+                            .unwrap_or_else(|| json!({}));
+                        let pattern = o.get("pattern").and_then(Value::as_str).unwrap_or("");
+                        let profile = o.get("profile").and_then(Value::as_str).unwrap_or("");
+                        if pattern.trim().is_empty() {
+                            bail!("rule {} has nothing to match on", i + 1);
+                        }
+                        if profile.trim().is_empty() {
+                            bail!("rule {} does not say which profile to apply", i + 1);
+                        }
+                    }
+                }
+                let cfg = profiles::rules_from_json(&request.params);
+                // Refuse to persist a rule pointing at a profile that is not there.
+                for rule in &cfg.rules {
+                    if !rule.profile.is_empty() && !self.profiles.exists(&rule.profile) {
+                        bail!("no profile called '{}'", rule.profile);
+                    }
+                }
+                if !cfg.fallback_profile.is_empty() && !self.profiles.exists(&cfg.fallback_profile) {
+                    bail!("no profile called '{}'", cfg.fallback_profile);
+                }
+                let snapshot = profiles::rules_to_json(&cfg);
+                self.rules.save(&snapshot)?;
+                Ok(snapshot)
+            }
+            "color.state" => {
+                let snapshot = tokio::task::spawn_blocking(color_snapshot)
+                    .await
+                    .context("colormgr probe panicked")?;
+                Ok(snapshot)
+            }
+            "color.setProfile" => {
+                let device_id = parameter("deviceId")?.to_string();
+                let profile_id = parameter("profileId")?.to_string();
+                if device_id.is_empty() || profile_id.is_empty() {
+                    bail!("both 'deviceId' and 'profileId' are required");
+                }
+                let inv = profiles::color::ColormgrInvocation::make_default(&device_id, &profile_id);
+                let result = tokio::task::spawn_blocking(move || profiles::color::invoke_colormgr(&inv))
+                    .await
+                    .context("colormgr probe panicked")?;
+                if result.is_none() {
+                    bail!("colormgr did not respond or refused the profile");
+                }
+                let snapshot = tokio::task::spawn_blocking(color_snapshot)
+                    .await
+                    .context("colormgr probe panicked")?;
+                Ok(snapshot)
+            }
             _ => bail!("Unsupported Rust backend method: {}", request.method),
         }
+    }
+
+    // The current panel picture values, as the profile stores them. The A0 HID
+    // driver reads brightness/contrast/RGB gain but not the panel preset (0x14)
+    // or the C++ 0x87 code, so the snapshot is partial; touch mode and the input
+    // calibration matrix are not surfaced by the Rust backend either.
+    fn capture_profile_body(&self) -> Result<Value> {
+        let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.is_none() {
+            match hid::Device::open() {
+                Ok(device) => *guard = Some(device),
+                Err(error) => bail!(
+                    "no panel on DDC, so there are no picture values to save: {error}"
+                ),
+            }
+        }
+        let device = guard.as_ref().context("hid device unavailable")?;
+        let params = device
+            .read_screen_params()
+            .context("no panel on DDC, so there are no picture values to save")?;
+        let mut vcp = serde_json::Map::new();
+        vcp.insert("10".to_string(), json!(params.brightness));
+        vcp.insert("12".to_string(), json!(params.contrast));
+        vcp.insert("16".to_string(), json!(params.red));
+        vcp.insert("18".to_string(), json!(params.green));
+        vcp.insert("1a".to_string(), json!(params.blue));
+        Ok(json!({
+            "vcp": Value::Object(vcp),
+            // Identity: the Rust backend does not yet drive a touch controller.
+            "matrix": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        }))
+    }
+
+    // Apply a profile the same path a click takes. Preset (0x14), the 0x87 code
+    // and RGB gain are only writable over DDC, which the Rust backend does not
+    // drive yet; only brightness/contrast are written over the A0 HID path.
+    fn apply_profile(&self, name: &str) -> Result<Value> {
+        if !self.profiles.exists(name) {
+            bail!("no profile called '{name}'");
+        }
+        let body = self.profiles.load(name);
+        let vcp = body.get("vcp").cloned().unwrap_or_else(|| json!({}));
+        let mut written = 0;
+        let mut skipped = 0;
+        let mut ddc_ready = false;
+        {
+            let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.is_none() {
+                *guard = hid::Device::open().ok();
+            }
+            if let Some(device) = guard.as_ref() {
+                ddc_ready = true;
+                let params = device.read_screen_params().ok();
+                let mut apply = |code: &str, param: hardware::ScreenParam, current: u8| {
+                    let Some(want) = vcp.get(code).and_then(Value::as_i64).and_then(|v| u8::try_from(v).ok()) else {
+                        skipped += 1;
+                        return;
+                    };
+                    if want == current {
+                        skipped += 1;
+                        return;
+                    }
+                    let frame = hardware::set_screen_param(param, want);
+                    let ex = device.exchange(&frame, Some(&hid::Confirmation::approve("apply profile")));
+                    if ex.ok {
+                        written += 1;
+                    } else {
+                        skipped += 1;
+                    }
+                };
+                if let Some(params) = params {
+                    apply("10", hardware::ScreenParam::Brightness, params.brightness);
+                    apply("12", hardware::ScreenParam::Contrast, params.contrast);
+                }
+            }
+        }
+        self.profiles.set_active(name);
+        Ok(json!({
+            "name": name,
+            "vcpWritten": written,
+            "vcpSkipped": skipped,
+            "ddcReady": ddc_ready,
+            "touchApplied": false,
+            "matrixApplied": false,
+        }))
     }
 }
 
@@ -525,6 +772,12 @@ async fn main() -> Result<()> {
     }
     let scripts = directory.join(format!("scripts-{}", std::process::id()));
     private_directory(&scripts)?;
+    let config_root = config_root()?;
+    let profiles = profiles::ProfileStore::new(
+        config_root.join("profiles"),
+        config_root.join("settings.json"),
+    );
+    let rules = profiles::RulesStore::new(config_root.join("rules.json"));
     let (shutdown, mut signal) = watch::channel(false);
     // A1: DDC/CI via ddcutil. The client runs one ddcutil child at a time; a
     // background task drains the job queue after each enqueue. On bus discovery
@@ -542,6 +795,8 @@ async fn main() -> Result<()> {
         sensors: std::sync::Mutex::new(sensors::SensorSource::new()),
         media: media::Media::new().await,
         shutdown,
+        profiles,
+        rules,
     });
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
