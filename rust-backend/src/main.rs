@@ -162,22 +162,18 @@ impl Backend {
     /// device if it was opened, else attempts a best-effort open (a safe read)
     /// so `state.all`/`device.state` report real presence during cutover; falls
     /// back to a "not present" placeholder only when the device is genuinely
-    /// unavailable, so the UI still renders rather than erroring.
+    /// unavailable, so the UI still renders rather than erroring. When nothing is
+    /// attached every field is empty, as the C++ `EdgeDevice::State` defaults
+    /// are: naming `/dev/hidraw1` here claimed a node that need not exist.
     fn device_info(&self) -> state::DeviceInfo {
         let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
         if guard.is_none() {
             // Opening the Bragi control channel is a pure read; never write-gated.
             *guard = hid::Device::open().ok();
         }
-        if let Some(d) = guard.as_ref() {
-            return d.device_info();
-        }
-        state::DeviceInfo {
-            present: false,
-            accessible: false,
-            path: PathBuf::from("/dev/hidraw1"),
-            product: "XENEON EDGE".into(),
-            serial: String::new(),
+        match guard.as_ref() {
+            Some(device) => device.device_info(),
+            None => hid::Presence::absent().device_info(),
         }
     }
 
@@ -185,17 +181,7 @@ impl Backend {
     /// channel, matching the C++ screenSnapshot().
     fn screen_snapshot(&self) -> Value {
         let guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(device) = guard.as_ref() else {
-            return json!({"available":false,"error":"no accessible Edge Bragi HID device"});
-        };
-        match (device.screen_params(), device.screen_error()) {
-            (Some(params), _) => json!({"available":true,
-                "brightness": params.brightness, "backlight": params.backlight,
-                "contrast": params.contrast}),
-            (None, Some(err)) => json!({"available":false, "error": err}),
-            (None, None) => json!({"available":false,
-                "error":"screen parameters have not been read"}),
-        }
+        screen_json(guard.as_ref())
     }
 
     /// Assemble the `system` snapshot (system.info), matching the C++
@@ -1086,6 +1072,63 @@ fn with_media(mut snapshot: Value, media: &Value) -> Value {
     snapshot
 }
 
+/// The `screen` snapshot for an open device, or the honest absence of one.
+/// Shared by `Backend::screen_snapshot` and the hotplug refresh so the event and
+/// `screen.state` cannot describe the panel differently.
+fn screen_json(device: Option<&hid::Device>) -> Value {
+    let Some(device) = device else {
+        return json!({"available":false,"error":"no accessible Edge Bragi HID device"});
+    };
+    match (device.screen_params(), device.screen_error()) {
+        (Some(params), _) => json!({"available":true,
+            "brightness": params.brightness, "backlight": params.backlight,
+            "contrast": params.contrast}),
+        (None, Some(err)) => json!({"available":false, "error": err}),
+        (None, None) => json!({"available":false,
+            "error":"screen parameters have not been read"}),
+    }
+}
+
+/// Drop the cached HID channel after a hotplug and re-read the panel's values if
+/// it came back reachable, returning the `screen` snapshot to broadcast.
+///
+/// Mirrors `Api.cpp:159-168`: the C++ agent broadcasts `device`, resets its
+/// screen cache (the values belonged to the device that left), re-reads them when
+/// the device is present and accessible, then broadcasts `screen`. Runs on the
+/// blocking pool — the re-read waits up to the HID reply timeout for the panel.
+///
+/// Rust drops the whole `Device` rather than only its cached values: the open
+/// channel belonged to the node that went away, and keeping it would make every
+/// later request fail against a dead fd instead of re-opening the new node.
+fn refresh_after_hotplug(backend: &Arc<Backend>, presence: &hid::Presence) -> Value {
+    // Drop the stale channel first, and do not hold the lock across the re-read:
+    // that waits up to the HID reply timeout, and every `device.state`,
+    // `screen.state` and profile apply takes the same lock.
+    {
+        let mut guard = backend.hid.lock().unwrap_or_else(|p| p.into_inner());
+        *guard = None;
+    }
+    if !(presence.present && presence.accessible) {
+        return screen_json(None);
+    }
+    let device = match hid::Device::open() {
+        Ok(device) => device,
+        Err(error) => return json!({"available":false, "error": error.to_string()}),
+    };
+    let _ = device.read_screen_params();
+    let snapshot = screen_json(Some(&device));
+    let mut guard = backend.hid.lock().unwrap_or_else(|p| p.into_inner());
+    match guard.as_ref() {
+        // A dispatch arm re-opened the panel while we were reading; that channel
+        // is the one in use, so describe it instead of adopting a second fd.
+        Some(existing) => screen_json(Some(existing)),
+        None => {
+            *guard = Some(device);
+            snapshot
+        }
+    }
+}
+
 fn private_directory(path: &Path) -> Result<()> {
     if !path.exists() {
         std::fs::create_dir(path)?;
@@ -1148,7 +1191,15 @@ async fn main() -> Result<()> {
     // background task drains the job queue after each enqueue. On bus discovery
     // it fetches capabilities and seeds the standard reads so a UI connecting
     // later has real values instead of placeholders.
-    let ddc = Arc::new(ddc::Ddc::new(ddc::DdcConfig::default()));
+    // Resolved once, before the DDC client, so the binary it reports in
+    // `system.info` is the binary it actually runs: with a bare name the two can
+    // disagree when `PATH` is misconfigured (see tools::find_in_path).
+    let tools = tools::Tools::detect();
+    let ddc = Arc::new(ddc::Ddc::new(ddc::DdcConfig {
+        ddcutil: (!tools.ddcutil.path.is_empty())
+            .then(|| std::path::PathBuf::from(&tools.ddcutil.path)),
+        seed_standard: true,
+    }));
     // Created before the backend so the DDC worker can announce its finished
     // jobs (`ddc`/`ddcLog`) on the same fan-out channel the RPC layer uses.
     let (broadcast_tx, broadcast_rx) = broadcast::channel(256);
@@ -1171,7 +1222,7 @@ async fn main() -> Result<()> {
         socket_path: socket.clone(),
         broadcast: broadcast_tx,
         streaming_wake: Notify::new(),
-        tools: tools::Tools::detect(),
+        tools,
     });
     // The initial receiver is not needed: `broadcast` closes only when the
     // Sender is dropped, and later `subscribe()` calls work with zero
@@ -1230,6 +1281,40 @@ async fn main() -> Result<()> {
                     _ = tokio::time::sleep(Duration::from_millis(interval_ms as u64)) => {}
                     _ = backend.streaming_wake.notified() => {}
                 }
+            }
+        });
+    }
+    // Device hotplug: the C++ agent polls `HidEnumerator::findEdge()` every 2 s
+    // and, on a change, broadcasts `device` plus a refreshed `screen`
+    // (Api.cpp:88,159-168). Same here, on the blocking pool because the re-read
+    // waits for the panel. The initial probe only seeds the comparison: a client
+    // that connects later reads `state.all` anyway, and broadcasting before
+    // anything can be listening would be noise.
+    {
+        let backend = backend.clone();
+        tokio::spawn(async move {
+            let mut last = tokio::task::spawn_blocking(hid::probe)
+                .await
+                .unwrap_or_else(|_| hid::Presence::absent());
+            loop {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let Ok(now) = tokio::task::spawn_blocking(hid::probe).await else {
+                    continue;
+                };
+                if now == last {
+                    continue;
+                }
+                last = now.clone();
+                backend.broadcast("device", state::device_snapshot(&now.device_info()));
+                let refresh = backend.clone();
+                let screen =
+                    tokio::task::spawn_blocking(move || refresh_after_hotplug(&refresh, &now))
+                        .await
+                        .unwrap_or_else(|error| {
+                            json!({"available":false,
+                                "error": format!("screen refresh failed: {error}")})
+                        });
+                backend.broadcast("screen", screen);
             }
         });
     }

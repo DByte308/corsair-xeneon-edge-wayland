@@ -77,9 +77,10 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
     connection, and `{event,data}` lines on the same sockets. Emitted today:
     `sensors` (streamed at the client's interval), `screen`, `touch`,
     `touchConfig`, `profiles` (`{active}`/`{changed}`), `rules`, `update`,
-    `ddc`, `ddcLog`. Still missing, each needing a watcher the Rust backend does
-    not have: `device` (hotplug), `focus` (rules arming) and
-    `touch.point`/`gesture` (XInput2 stream). `ui.action` is now emitted for the
+    `ddc`, `ddcLog`, `device` (hotplug) and the `screen` that follows it. Still
+    missing, each needing a watcher the Rust backend does not have: `focus`
+    (rules arming) and `touch.point`/`gesture` (XInput2 stream). `ui.action` is
+    now emitted for the
     dashboard vocabulary (`dashboard-toggle`, `dashboard-page-next`): those live
     in the UI process, so `launchpad.action` relays them instead of failing as an
     unknown KWin shortcut, matching `Api::runGestureAction`. The remaining
@@ -115,7 +116,10 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   `PATH` and asks each tool for its version, once at startup (the C++ agent
   re-runs four processes per `system.info`). Empty means "not found" and the
   Settings pane already renders that as `not found` with a note, so the honest
-  answer reaches the operator instead of a plausible one.
+  answer reaches the operator instead of a plausible one. The DDC client is
+  started with the resolved path too, so the binary `system.info` names is the
+  binary that runs — the earlier open thread (a bare `ddcutil` name honours an
+  empty `PATH` component that the reported lookup skips) is closed.
 - **One version number, seven carriers.** `rust-backend` was `0.1.0` while
   everything else was `0.7.0`, and `page-settings.js` warns whenever the agent's
   `system.version` differs from the interface's — so cutover would have shown
@@ -133,25 +137,35 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   `api.onEvent` paths now have a Rust source: `sensors` streaming (interval
   clamped to >= 250 ms, interruptible so a re-time or disable applies at once,
   and served while the flag is set even with no client, like the C++ agent),
-  plus `screen`, `touch`, `touchConfig`, `profiles`, `rules`, `update`, `ddc`
-  and `ddcLog` pushed from the dispatch arms or the DDC worker. Two defects the
+  plus `screen`, `touch`, `touchConfig`, `profiles`, `rules`, `update`, `ddc`,
+  `ddcLog` and `device` pushed from the dispatch arms, the DDC worker or the
+  hotplug probe. Two defects the
   audit caught in the first cut are fixed and regression-tested: the `sensors`
   event used to carry placeholder media (it blanked the dashboard's now-playing
   tile and notification badge every second), and a disconnected client leaked
   one fd because the event forwarder stayed parked owning the write half
   (`b1_sensors_stream_broadcasts_merged_snapshots`,
   `b1_closed_connections_release_their_sockets`).
-- **No event-broadcast channel for `device`, `focus`, `touch.point`/`gesture`.**
-  Those three need machinery the Rust backend does not have yet: a hotplug
-  watcher (udev/HID), the X11 focus watcher (so `rules.get` still reports
-  `watching:false`), and the XInput2 touch stream (the `touch.stream` arm turns
-  on nothing). `ui.action` **is** emitted now: `launchpad.action` relays the
+- **No event-broadcast channel for `focus`, `touch.point`/`gesture`.** Those two
+  need machinery the Rust backend does not have yet: the X11 focus watcher (so
+  `rules.get` still reports `watching:false`), and the XInput2 touch stream (the
+  `touch.stream` arm turns on nothing). `device` **is** emitted now: a 2 s probe
+  of the hidraw node (the C++ `EdgeDevice` polling interval) compares presence,
+  path, product, serial and accessibility, and on a change broadcasts `device`
+  plus the refreshed `screen`, re-reading the panel's values when it came back —
+  the same sequence as `Api.cpp:159-168`. Probing opens no report channel, so it
+  cannot disturb an exchange in flight, and the Rust side additionally drops the
+  cached channel on a change instead of talking to a dead fd. A real unplug is
+  still part of the gate-C run: what is proven here is that an unchanged device
+  emits nothing and that the comparator treats a re-plug, a udev rule appearing
+  and an unplug as changes. `ui.action` **is** emitted now: `launchpad.action` relays the
   dashboard vocabulary (`dashboard-toggle`, `dashboard-page-next`) to the UI
   process that owns the dashboard, as `Api::runGestureAction` does, instead of
   failing as an unknown KWin shortcut; the window vocabulary is validated up
   front so a typo cannot load the KWin controller either. Dashboard tiles that
-  follow sensors, DDC, profiles and rules update live; anything driven by the
-  three watchers above does not.
+  follow sensors, DDC, profiles and rules update live, and a device appearing or
+  disappearing now redraws the device pane; anything driven by `focus` or the
+  touch stream does not.
 - Rust backend still reports `hardware: "legacy C++ agent (not migrated)"` in
   `backend.info` — the C++ agent is still the running hardware owner for the
   Electron host; the Rust backend is invoked alongside it during dev. The

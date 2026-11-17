@@ -149,12 +149,77 @@ pub fn find_edge_node() -> Result<PathBuf> {
     find_device(Path::new("/sys/class/hidraw"))
 }
 
+/// The Edge's presence and identity, read without keeping a report channel open.
+///
+/// The C++ agent's `EdgeDevice::pollNow()` calls `HidEnumerator::findEdge()`
+/// every 2 s and emits `stateChanged` when the result differs; this is the part
+/// of that state a poll can see. `accessible` means the node exists *and* the
+/// current user may open it, which is what separates "plugged in but no udev
+/// rule" from "working" — the distinction the Settings pane shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Presence {
+    pub present: bool,
+    pub accessible: bool,
+    pub path: PathBuf,
+    pub product: String,
+    pub serial: String,
+}
+
+impl Presence {
+    /// Nothing attached. Every field stays empty rather than naming a node that
+    /// is not there: the C++ `EdgeDevice::State` defaults are empty too, and the
+    /// UI renders an empty path as "—".
+    pub fn absent() -> Self {
+        Self::default()
+    }
+
+    /// As `state.device`, so a hotplug event and `device.state` cannot disagree.
+    pub fn device_info(&self) -> crate::state::DeviceInfo {
+        crate::state::DeviceInfo {
+            present: self.present,
+            accessible: self.accessible,
+            path: self.path.clone(),
+            product: self.product.clone(),
+            serial: self.serial.clone(),
+        }
+    }
+}
+
+/// Probe the real device.
+pub fn probe() -> Presence {
+    probe_in(Path::new("/sys/class/hidraw"))
+}
+
+/// [`probe`] against an explicit sysfs class directory. Cheap by design: one
+/// `readdir`, one `readlink`, one small read and a permission test — no report
+/// channel is opened, so polling it cannot disturb a panel mid-exchange.
+pub fn probe_in(base: &Path) -> Presence {
+    let Ok(path) = find_device(base) else {
+        return Presence::absent();
+    };
+    let (product, serial) = sysfs_identity_in(base, &path);
+    let accessible = OpenOptions::new().read(true).open(&path).is_ok();
+    Presence {
+        present: true,
+        accessible,
+        path,
+        product,
+        serial,
+    }
+}
+
 /// Read the Edge's product/serial identity from the hidraw sysfs uevent, so
 /// `device.state` can report them like the C++ agent's HidEnumerator. Falls back
 /// to the known product string and an empty serial if the sysfs node is missing.
 fn sysfs_identity(path: &Path) -> (String, String) {
+    sysfs_identity_in(Path::new("/sys/class/hidraw"), path)
+}
+
+/// [`sysfs_identity`] against an explicit sysfs class directory, so the fixture
+/// tree in the tests can exercise it.
+fn sysfs_identity_in(base: &Path, path: &Path) -> (String, String) {
     let node = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    let uevent = Path::new("/sys/class/hidraw")
+    let uevent = base
         .join(node)
         .join("device/uevent");
     let Ok(text) = fs::read_to_string(&uevent) else {
@@ -444,5 +509,88 @@ mod tests {
         // not gated, write SET is gated.
         assert!(hardware::set_screen_param(ScreenParam::Brightness, 50).is_write());
         assert!(!hardware::screen_params_query().is_write());
+    }
+
+    /// Build the sysfs shape `find_device` matches: a `hidrawN` entry whose
+    /// symlink target names the Edge's vendor/product, with a `uevent` beside it
+    /// carrying the identity. Returns the class directory.
+    fn fixture_class_dir(name: &str) -> PathBuf {
+        let root = fixture_root(name);
+        let class = root.join("class");
+        let device = root.join("device/hidraw");
+        std::fs::create_dir_all(&device).unwrap();
+        std::fs::create_dir_all(&class).unwrap();
+        // 0003:1B1C:1D0D is the Edge Bragi interface the C++ enumerator matches.
+        let target = root.join("0003:1B1C:1D0D.0002/hidraw/hidraw7");
+        std::fs::create_dir_all(target.join("device")).unwrap();
+        std::fs::write(
+            target.join("device/uevent"),
+            "HID_NAME=CORSAIR XENEON EDGE\nHID_UNIQ=213826425656\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&target, class.join("hidraw7")).unwrap();
+        class
+    }
+
+    fn fixture_root(name: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "edgeline-hid-{name}-{}-{nanos}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    /// A hotplug is detected by comparing probes, so the probe has to be cheap,
+    /// side-effect free and complete: presence, identity and access, and nothing
+    /// invented when the device is gone.
+    #[test]
+    fn probe_reports_presence_identity_and_absence() {
+        let class = fixture_class_dir("present");
+        let presence = probe_in(&class);
+        assert!(presence.present, "the fixture node must be found");
+        assert_eq!(presence.product, "CORSAIR XENEON EDGE");
+        assert_eq!(presence.serial, "213826425656");
+        assert!(presence.path.starts_with("/dev/"), "got {:?}", presence.path);
+        // /dev/hidraw7 does not exist for a fixture tree, so it cannot be opened.
+        assert!(!presence.accessible, "a fixture node is not an open device");
+        let _ = std::fs::remove_dir_all(class.parent().unwrap());
+
+        // An empty class directory is the unplugged case: every field empty, no
+        // fabricated node name.
+        let empty = fixture_root("absent").join("class");
+        std::fs::create_dir_all(&empty).unwrap();
+        let gone = probe_in(&empty);
+        assert_eq!(gone, Presence::absent());
+        assert_eq!(gone.device_info().path, PathBuf::new());
+        let _ = std::fs::remove_dir_all(empty.parent().unwrap());
+    }
+
+    /// The comparison the watcher is built on: identity or access changing is a
+    /// change, a repeated probe is not (otherwise it would broadcast every 2 s).
+    #[test]
+    fn presence_comparison_ignores_repeated_probes() {
+        let a = Presence {
+            present: true,
+            accessible: true,
+            path: PathBuf::from("/dev/hidraw7"),
+            product: "CORSAIR XENEON EDGE".into(),
+            serial: "213826425656".into(),
+        };
+        assert_eq!(a.clone(), a, "an unchanged device is not an event");
+        let mut inaccessible = a.clone();
+        inaccessible.accessible = false;
+        assert_ne!(a, inaccessible, "a udev rule appearing is an event");
+        let mut replugged = a.clone();
+        replugged.path = PathBuf::from("/dev/hidraw9");
+        assert_ne!(a, replugged, "the same panel on a new node is an event");
+        assert_ne!(a, Presence::absent(), "unplugging is an event");
     }
 }
