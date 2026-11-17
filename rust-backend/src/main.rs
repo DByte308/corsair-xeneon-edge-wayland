@@ -3,6 +3,7 @@ pub mod hardware;
 mod hid;
 mod kwin;
 mod model;
+mod touch;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -29,6 +30,7 @@ struct Request {
 struct Backend {
     kwin: kwin::Kwin,
     hid: std::sync::Mutex<Option<hid::Device>>,
+    touch: std::sync::Mutex<touch::Touch>,
     shutdown: watch::Sender<bool>,
 }
 
@@ -117,6 +119,50 @@ impl Backend {
                 Ok(json!({ "available": true, "path": device.path().display().to_string(),
                     "brightness": params.brightness, "backlight": params.backlight,
                     "contrast": params.contrast, "red": params.red, "green": params.green, "blue": params.blue }))
+            }
+            "touch.state" => {
+                let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                Ok(guard.state())
+            }
+            "touch.setMode" => {
+                let mode = parameter("mode")?;
+                let mut guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                guard.set_mode(mode)
+            }
+            "touch.probe" => {
+                let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                Ok(guard.probe())
+            }
+            "touch.stream" => {
+                let on = request.params.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                let mut guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                Ok(guard.set_streaming(on))
+            }
+            "touch.applyOutputMapping" => {
+                let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                guard.apply_output_mapping()
+            }
+            "touch.setMatrix" => {
+                let values = request
+                    .params
+                    .get("matrix")
+                    .and_then(Value::as_array)
+                    .context("'matrix' must have 9 numbers")?;
+                let matrix: Vec<f64> = values.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect();
+                let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                guard.set_matrix(&matrix)
+            }
+            "touch.calibrate" => {
+                let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                guard.calibrate(&request.params)
+            }
+            "touch.config" => {
+                let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                Ok(guard.config_snapshot())
+            }
+            "touch.setConfig" => {
+                let mut guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                guard.set_config(&request.params)
             }
             "controller.ensure" => {
                 self.kwin.ensure().await?;
@@ -281,6 +327,7 @@ async fn main() -> Result<()> {
     let backend = Arc::new(Backend {
         kwin: kwin::Kwin::new(&scripts).await?,
         hid: std::sync::Mutex::new(None),
+        touch: std::sync::Mutex::new(touch::Touch::new(touch::config::touch_path())),
         shutdown,
     });
     let listener = UnixListener::bind(&socket)?;
