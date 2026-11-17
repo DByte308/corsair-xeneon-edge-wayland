@@ -155,7 +155,13 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   plus the refreshed `screen`, re-reading the panel's values when it came back —
   the same sequence as `Api.cpp:159-168`. Probing opens no report channel, so it
   cannot disturb an exchange in flight, and the Rust side additionally drops the
-  cached channel on a change instead of talking to a dead fd. A real unplug is
+  cached channel on a change instead of talking to a dead fd. The comparison
+  includes the sysfs device instance (`0003:1B1C:1D0D.0002`), whose trailing
+  counter increments on re-enumeration even when `/dev/hidrawN` is reused, so a
+  fast replug is still visible; and a channel whose exchange fails hard (ENODEV,
+  EOF) is marked dead and re-opened on the next request, so a change the probe
+  cannot see self-heals instead of failing every screen call until a restart. A
+  real unplug is
   still part of the gate-C run: what is proven here is that an unchanged device
   emits nothing and that the comparator treats a re-plug, a udev rule appearing
   and an unplug as changes. `ui.action` **is** emitted now: `launchpad.action` relays the

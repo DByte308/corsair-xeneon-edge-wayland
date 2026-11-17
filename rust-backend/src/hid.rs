@@ -20,7 +20,10 @@ use std::{
         unix::fs::OpenOptionsExt,
     },
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -126,6 +129,10 @@ pub fn find_device(base: &Path) -> Result<PathBuf> {
             }
         }
     }
+    // Sorted, not `read_dir` order: the hotplug watcher compares the resolved
+    // path, so an unordered pick would look like a device change (and trigger a
+    // full screen re-read) on every probe if two collections ever matched.
+    nodes.sort();
     // Prefer the /dev node when present; otherwise infer from the device path.
     let node = nodes.first().cloned().context("no Edge Bragi hidraw device")?;
     infer_dev_node(&node)
@@ -163,6 +170,10 @@ pub struct Presence {
     pub path: PathBuf,
     pub product: String,
     pub serial: String,
+    /// The sysfs device instance (`0003:1B1C:1D0D.0002`). Its trailing counter
+    /// increments on every re-enumeration even when `/dev/hidrawN` is reused, so
+    /// this is what makes a fast unplug/replug visible to the comparator.
+    pub instance: String,
 }
 
 impl Presence {
@@ -198,14 +209,36 @@ pub fn probe_in(base: &Path) -> Presence {
         return Presence::absent();
     };
     let (product, serial) = sysfs_identity_in(base, &path);
-    let accessible = OpenOptions::new().read(true).open(&path).is_ok();
+    // Opened the way `Hid::open` opens it, so `accessible` means "usable": a udev
+    // rule granting read without write would otherwise report a panel the app
+    // cannot drive. Nothing is sent, so this cannot disturb an exchange.
+    let accessible = OpenOptions::new().read(true).write(true).open(&path).is_ok();
+    let instance = device_instance(base, &path);
     Presence {
         present: true,
         accessible,
         path,
         product,
         serial,
+        instance,
     }
+}
+
+/// The sysfs device instance behind a hidraw node, e.g. `0003:1B1C:1D0D.0002`.
+fn device_instance(base: &Path, path: &Path) -> String {
+    let node = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let Ok(target) = fs::read_link(base.join(node)) else {
+        return String::new();
+    };
+    let target_text = target.display().to_string();
+    target
+        .components()
+        .rev()
+        .filter_map(|part| part.as_os_str().to_str())
+        .find(|name| name.starts_with("0003:"))
+        .map(str::to_string)
+        // Fall back to the whole target: any re-enumeration still differs.
+        .unwrap_or(target_text)
 }
 
 /// Read the Edge's product/serial identity from the hidraw sysfs uevent, so
@@ -239,6 +272,16 @@ fn sysfs_identity_in(base: &Path, path: &Path) -> (String, String) {
         }
     }
     (product, serial)
+}
+
+/// Why a reply did not arrive. The distinction decides cache invalidation: a
+/// panel that is merely slow must not be treated as a device that left, or a
+/// busy moment would throw away a working channel.
+enum ReplyError {
+    /// No answer within [`REPLY_TIMEOUT`]; the panel is there but silent.
+    TimedOut,
+    /// The channel is gone (closed or a hard I/O error, e.g. ENODEV on unplug).
+    Gone(String),
 }
 
 /// A fully-open HID channel to the Edge Bragi interface.
@@ -278,17 +321,23 @@ impl Hid {
         Ok(())
     }
 
-    fn read_reply(&mut self) -> Result<Vec<u8>> {
-        let deadline = Instant::now() + REPLY_TIMEOUT;
+    fn read_reply(&mut self) -> std::result::Result<Vec<u8>, ReplyError> {
+        self.read_reply_within(REPLY_TIMEOUT)
+    }
+
+    /// [`read_reply`] with an explicit deadline, so the timeout path is testable
+    /// without spending the real 1.5 s.
+    fn read_reply_within(&mut self, timeout: Duration) -> std::result::Result<Vec<u8>, ReplyError> {
+        let deadline = Instant::now() + timeout;
         let mut buf = [0u8; hardware::REPORT_SIZE];
         loop {
             match self.file.read(&mut buf) {
-                Ok(0) => bail!("HID channel closed"),
+                Ok(0) => return Err(ReplyError::Gone("HID channel closed".into())),
                 Ok(n) => return Ok(buf[..n].to_vec()),
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
                         if Instant::now() >= deadline {
-                            bail!("HID reply timed out");
+                            return Err(ReplyError::TimedOut);
                         }
                         std::thread::sleep(Duration::from_millis(5));
                         continue;
@@ -296,7 +345,7 @@ impl Hid {
                     if e.kind() == std::io::ErrorKind::Interrupted {
                         continue;
                     }
-                    return Err(e.into());
+                    return Err(ReplyError::Gone(e.to_string()));
                 }
             }
         }
@@ -312,6 +361,11 @@ pub struct Device {
     serial: String,
     screen: Mutex<Option<ScreenParams>>,
     error: Mutex<Option<String>>,
+    /// Set when an exchange failed in a way that means the node is gone. The
+    /// owner of this channel clears it on the next use, so a re-plug that the
+    /// hotplug watcher could not see (same hidraw number, same identity) still
+    /// recovers instead of failing every request until a restart.
+    dead: AtomicBool,
 }
 
 impl Device {
@@ -326,7 +380,13 @@ impl Device {
             serial,
             screen: Mutex::new(None),
             error: Mutex::new(None),
+            dead: AtomicBool::new(false),
         })
+    }
+
+    /// Whether a previous exchange found the channel gone.
+    pub fn is_dead(&self) -> bool {
+        self.dead.load(Ordering::Relaxed)
     }
 
     /// The Bragi hidraw path (for the Dashboard/Settings device pane).
@@ -377,6 +437,9 @@ impl Device {
         if let Err(e) = hid.write_frame(frame) {
             let msg = format!("write failed: {e}");
             append_log(&format!("TX-FAIL {msg}"));
+            // A write error on a hidraw node means the device is gone (ENODEV),
+            // never a transient fault worth retrying on the same fd.
+            self.mark_dead();
             return Exchange {
                 tx,
                 error: msg,
@@ -385,12 +448,23 @@ impl Device {
         }
         let rx = match hid.read_reply() {
             Ok(r) => r,
-            Err(e) => {
-                let msg = format!("RX (none: {e})");
+            Err(ReplyError::TimedOut) => {
+                // A silent panel is not a departed one: keep the channel.
+                let msg = "RX (none: HID reply timed out)";
                 append_log(&msg);
                 return Exchange {
                     tx,
-                    error: e.to_string(),
+                    error: "HID reply timed out".into(),
+                    ..Default::default()
+                };
+            }
+            Err(ReplyError::Gone(reason)) => {
+                let msg = format!("RX (none: {reason})");
+                append_log(&msg);
+                self.mark_dead();
+                return Exchange {
+                    tx,
+                    error: reason,
                     ..Default::default()
                 };
             }
@@ -409,6 +483,10 @@ impl Device {
 
     /// Read current screen parameters (backlight/contrast/brightness + RGB gain)
     /// and cache them. Returns the cached value on success.
+    fn mark_dead(&self) {
+        self.dead.store(true, Ordering::Relaxed);
+    }
+
     pub fn read_screen_params(&self) -> Result<ScreenParams> {
         let frame = hardware::screen_params_query();
         let ex = self.exchange(&frame, Some(&Confirmation::approve("get screen params")));
@@ -475,6 +553,7 @@ mod tests {
             serial: "test".to_string(),
             screen: Mutex::new(None),
             error: Mutex::new(None),
+            dead: AtomicBool::new(false),
         };
         let frame = hardware::set_screen_param(ScreenParam::Brightness, 40);
         let ex = d.exchange(&frame, None);
@@ -494,6 +573,7 @@ mod tests {
             serial: "test".to_string(),
             screen: Mutex::new(None),
             error: Mutex::new(None),
+            dead: AtomicBool::new(false),
         };
         // A read frame carries `is_write == false`, so it is not refused even
         // though no confirmation is supplied. It will fail in the device read,
@@ -559,6 +639,9 @@ mod tests {
         assert_eq!(presence.product, "CORSAIR XENEON EDGE");
         assert_eq!(presence.serial, "213826425656");
         assert!(presence.path.starts_with("/dev/"), "got {:?}", presence.path);
+        // The instance counter is what makes a fast replug on the same hidraw
+        // number visible to the watcher; without it the comparator sees nothing.
+        assert_eq!(presence.instance, "0003:1B1C:1D0D.0002");
         // /dev/hidraw7 does not exist for a fixture tree, so it cannot be opened.
         assert!(!presence.accessible, "a fixture node is not an open device");
         let _ = std::fs::remove_dir_all(class.parent().unwrap());
@@ -573,6 +656,74 @@ mod tests {
         let _ = std::fs::remove_dir_all(empty.parent().unwrap());
     }
 
+    /// A channel that failed hard must report itself dead so the owner clears it.
+    #[test]
+    fn a_gone_channel_is_marked_dead() {
+        // /dev/null accepts the write and reads as EOF: the channel is gone.
+        let gone = device_on(File::open("/dev/null").unwrap(), Path::new("/dev/null"));
+        assert!(!gone.is_dead());
+        let ex = gone.exchange(&hardware::screen_params_query(), None);
+        assert!(!ex.ok);
+        assert!(
+            gone.is_dead(),
+            "EOF on the channel means the device left: {}",
+            ex.error
+        );
+    }
+
+    /// A panel that is merely slow must not be treated as a departed one, or a
+    /// busy moment would discard a working channel. The classification lives in
+    /// `read_reply`, which is driven directly here with a short deadline — a
+    /// FIFO with no writer reads as WouldBlock forever, which is exactly a silent
+    /// panel. (`exchange` sends a frame before reading, and a frame written to a
+    /// FIFO we also read from would come straight back, so it cannot express
+    /// this case.)
+    #[test]
+    fn a_silent_channel_times_out_without_marking_the_device_dead() {
+        let dir = fixture_root("fifo");
+        let fifo = dir.join("fifo");
+        let status = std::process::Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
+        assert!(status.success());
+        // O_NONBLOCK matters: a blocking read on an empty FIFO waits forever
+        // instead of reaching the deadline, which is what the real channel does
+        // (Hid::open sets the same flag).
+        let device = device_on(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&fifo)
+                .unwrap(),
+            &fifo,
+        );
+        let result = device
+            .hid
+            .lock()
+            .unwrap()
+            .read_reply_within(Duration::from_millis(30));
+        assert!(
+            matches!(result, Err(ReplyError::TimedOut)),
+            "a quiet channel must classify as a timeout, not as gone"
+        );
+        assert!(!device.is_dead(), "a timeout must keep the channel");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn device_on(file: File, path: &std::path::Path) -> Device {
+        Device {
+            hid: Mutex::new(Hid {
+                file,
+                path: path.to_path_buf(),
+            }),
+            path: path.to_path_buf(),
+            product: "test".into(),
+            serial: "test".into(),
+            screen: Mutex::new(None),
+            error: Mutex::new(None),
+            dead: AtomicBool::new(false),
+        }
+    }
+
     /// The comparison the watcher is built on: identity or access changing is a
     /// change, a repeated probe is not (otherwise it would broadcast every 2 s).
     #[test]
@@ -583,6 +734,7 @@ mod tests {
             path: PathBuf::from("/dev/hidraw7"),
             product: "CORSAIR XENEON EDGE".into(),
             serial: "213826425656".into(),
+            instance: "0003:1B1C:1D0D.0002".into(),
         };
         assert_eq!(a.clone(), a, "an unchanged device is not an event");
         let mut inaccessible = a.clone();
@@ -591,6 +743,12 @@ mod tests {
         let mut replugged = a.clone();
         replugged.path = PathBuf::from("/dev/hidraw9");
         assert_ne!(a, replugged, "the same panel on a new node is an event");
+        let mut reenumerated = a.clone();
+        reenumerated.instance = "0003:1B1C:1D0D.0003".into();
+        assert_ne!(
+            a, reenumerated,
+            "a replug that reuses /dev/hidraw7 still gets a new instance"
+        );
         assert_ne!(a, Presence::absent(), "unplugging is an event");
     }
 }

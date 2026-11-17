@@ -162,11 +162,28 @@ impl Backend {
     /// device if it was opened, else attempts a best-effort open (a safe read)
     /// so `state.all`/`device.state` report real presence during cutover; falls
     /// back to a "not present" placeholder only when the device is genuinely
+    /// The cached HID channel, with a channel that failed hard cleared first.
+    ///
+    /// The hotplug watcher invalidates the cache when it *sees* the device
+    /// change, but a re-plug that reuses the same hidraw number with the same
+    /// identity is invisible to a probe (`Presence::instance` narrows that to
+    /// cases where sysfs also reused the instance counter). Without this, a
+    /// missed change would leave a dead fd cached and every screen call would
+    /// fail until the process restarted; clearing it makes the next request
+    /// re-open the node.
+    fn hid_guard(&self) -> std::sync::MutexGuard<'_, Option<hid::Device>> {
+        let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.as_ref().is_some_and(|device| device.is_dead()) {
+            *guard = None;
+        }
+        guard
+    }
+
     /// unavailable, so the UI still renders rather than erroring. When nothing is
     /// attached every field is empty, as the C++ `EdgeDevice::State` defaults
     /// are: naming `/dev/hidraw1` here claimed a node that need not exist.
     fn device_info(&self) -> state::DeviceInfo {
-        let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.hid_guard();
         if guard.is_none() {
             // Opening the Bragi control channel is a pure read; never write-gated.
             *guard = hid::Device::open().ok();
@@ -180,7 +197,7 @@ impl Backend {
     /// The screen state (backlight/contrast/brightness) from the cached HID
     /// channel, matching the C++ screenSnapshot().
     fn screen_snapshot(&self) -> Value {
-        let guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+        let guard = self.hid_guard();
         screen_json(guard.as_ref())
     }
 
@@ -316,7 +333,7 @@ impl Backend {
                 // Mirror Api::screenSnapshot(): surfaced by A1 per hid.rs. The
                 // HID channel caches the last settled parameters; `refresh`
                 // re-queries the panel for a change made from its own menu.
-                let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+                let mut guard = self.hid_guard();
                 if guard.is_none() {
                     match hid::Device::open() {
                         Ok(device) => *guard = Some(device),
@@ -351,7 +368,7 @@ impl Backend {
                 }
                 let reason = request.params.get("reason").and_then(Value::as_str)
                     .unwrap_or("set screen brightness");
-                let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+                let mut guard = self.hid_guard();
                 if guard.is_none() {
                     *guard = Some(hid::Device::open().context("no accessible Edge Bragi HID device")?);
                 }
@@ -833,7 +850,7 @@ impl Backend {
     // or the C++ 0x87 code, so the snapshot is partial; touch mode and the input
     // calibration matrix are not surfaced by the Rust backend either.
     fn capture_profile_body(&self) -> Result<Value> {
-        let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.hid_guard();
         if guard.is_none() {
             match hid::Device::open() {
                 Ok(device) => *guard = Some(device),
@@ -872,7 +889,7 @@ impl Backend {
         let mut skipped = 0;
         let mut ddc_ready = false;
         {
-            let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+            let mut guard = self.hid_guard();
             if guard.is_none() {
                 *guard = hid::Device::open().ok();
             }
@@ -1097,6 +1114,12 @@ fn screen_json(device: Option<&hid::Device>) -> Value {
 /// the device is present and accessible, then broadcasts `screen`. Runs on the
 /// blocking pool — the re-read waits up to the HID reply timeout for the panel.
 ///
+/// The ordering is deliberate and matches C++: `device` goes out before the
+/// re-read, so for that moment `device.state` describes the new device while
+/// `screen.state` still holds the old values. Do not "fix" that by reading
+/// first — a client that asks between the two events must be able to tell that
+/// something changed.
+///
 /// Rust drops the whole `Device` rather than only its cached values: the open
 /// channel belonged to the node that went away, and keeping it would make every
 /// later request fail against a dead fd instead of re-opening the new node.
@@ -1115,12 +1138,22 @@ fn refresh_after_hotplug(backend: &Arc<Backend>, presence: &hid::Presence) -> Va
         Ok(device) => device,
         Err(error) => return json!({"available":false, "error": error.to_string()}),
     };
+    // Re-take briefly before sending a frame on our own fd: if a dispatch arm
+    // opened the panel while we were opening, its channel is the live one, and
+    // two writers on the same panel at once could have a reply attributed to the
+    // wrong request. This shrinks the window to the duration of an `open()`;
+    // closing it entirely needs one mutex around every exchange, which belongs
+    // with the hardware-ownership work.
+    {
+        let guard = backend.hid.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(existing) = guard.as_ref() {
+            return screen_json(Some(existing));
+        }
+    }
     let _ = device.read_screen_params();
     let snapshot = screen_json(Some(&device));
     let mut guard = backend.hid.lock().unwrap_or_else(|p| p.into_inner());
     match guard.as_ref() {
-        // A dispatch arm re-opened the panel while we were reading; that channel
-        // is the one in use, so describe it instead of adopting a second fd.
         Some(existing) => screen_json(Some(existing)),
         None => {
             *guard = Some(device);
@@ -1298,8 +1331,14 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| hid::Presence::absent());
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
-                let Ok(now) = tokio::task::spawn_blocking(hid::probe).await else {
-                    continue;
+                let now = match tokio::task::spawn_blocking(hid::probe).await {
+                    Ok(now) => now,
+                    // The probe only stats and opens; a join error means it
+                    // panicked, which would otherwise be invisible.
+                    Err(error) => {
+                        eprintln!("device probe failed: {error}");
+                        continue;
+                    }
                 };
                 if now == last {
                     continue;
