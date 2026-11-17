@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pub mod hardware;
 mod ddc;
+mod gestures;
 mod hid;
 mod kwin;
 mod media;
@@ -153,7 +154,7 @@ impl Backend {
             "backend.info" => Ok(
                 json!({"name":"edgeline-backend","version":env!("CARGO_PKG_VERSION"),
                 "language":"Rust","stage":"control-core migration", "uiHost":"client-selected; native Tauri preview available",
-                "hardware":"legacy C++ agent (not migrated)","gestures":"disabled; Rust port pending",
+                "hardware":"legacy C++ agent (not migrated)","gestures":"disabled by default; state machine ported (flag-gated)",
                 "capabilities":["kwin-window-feed","edge-window-activation","window-fitting","native-window-picker","steam-launch","local-artwork"]}),
             ),
             "backend.stop" => Ok(json!({"stopping":true})),
@@ -336,6 +337,13 @@ impl Backend {
             }
             "window.snapshot" => Ok(serde_json::to_value(self.kwin.snapshot().await?)?),
             "window.activate" => self.kwin.activate(parameter("id")?).await,
+            "gestures.config" => {
+                // Read-only gesture config snapshot. Gestures are disabled by
+                // default (flag-gated) and this never enables them; the
+                // recognizer is a pure state machine and does not grab the
+                // digitizer or ask for any portal input permission.
+                Ok(gestures::config_snapshot())
+            }
             "launchpad.action" => {
                 let name = parameter("action")?;
                 match name {
