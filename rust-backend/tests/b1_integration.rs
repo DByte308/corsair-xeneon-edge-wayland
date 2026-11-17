@@ -42,6 +42,11 @@ fn unique_dir(name: &str) -> PathBuf {
 /// C++ agent and the Rust backend's `serve`.
 struct Client {
     stream: UnixStream,
+    /// Persistent reader over a clone of `stream`. The backend interleaves
+    /// unsolicited `{event,data}` lines with replies, so a fresh `BufReader` per
+    /// call would both swallow buffered bytes and return an event where a reply
+    /// was expected.
+    reader: BufReader<UnixStream>,
     next_id: u64,
 }
 
@@ -49,7 +54,12 @@ impl Client {
     fn connect(path: &PathBuf) -> std::io::Result<Client> {
         let stream = UnixStream::connect(path)?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        Ok(Client { stream, next_id: 1 })
+        let reader = BufReader::new(stream.try_clone()?);
+        Ok(Client {
+            stream,
+            reader,
+            next_id: 1,
+        })
     }
 
     fn call(&mut self, method: &str, params: Value) -> std::io::Result<Value> {
@@ -60,10 +70,39 @@ impl Client {
         line.push(b'\n');
         self.stream.write_all(&line)?;
 
-        let mut reader = BufReader::new(&self.stream);
+        // An event that lands between the request and the reply is not the
+        // reply; keep reading until the line is not an event.
+        loop {
+            let value = self.read_line()?;
+            if value.get("event").is_none() {
+                return Ok(value);
+            }
+        }
+    }
+
+    /// Read the next unsolicited event, discarding any replies in between.
+    fn next_event(&mut self) -> std::io::Result<Value> {
+        loop {
+            let value = self.read_line()?;
+            if value.get("event").is_some() {
+                return Ok(value);
+            }
+        }
+    }
+
+    fn read_line(&mut self) -> std::io::Result<Value> {
         let mut got = String::new();
-        reader.read_line(&mut got)?;
+        if self.reader.read_line(&mut got)? == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "backend closed the socket",
+            ));
+        }
         Ok(serde_json::from_str(&got)?)
+    }
+
+    fn set_read_timeout(&self, timeout: Duration) -> std::io::Result<()> {
+        self.stream.set_read_timeout(Some(timeout))
     }
 }
 
@@ -193,6 +232,133 @@ fn b1_read_only_rpc_contract() {
     assert!(
         unsup.get("error").is_some(),
         "unsupported method must be rejected, got {unsup}"
+    );
+}
+
+/// The only ticked broadcast. `sensors.stream` must deliver `{event:"sensors"}`
+/// snapshots, and each snapshot must carry the same keys as `state.all.sensors`:
+/// the raw snapshot hardcodes placeholder media fields, so an unmerged event
+/// blanks the dashboard's now-playing tile and notification badge every tick.
+#[test]
+fn b1_sensors_stream_broadcasts_merged_snapshots() {
+    let har = Harness::start("events").expect("spawn edgeline-backend");
+    har.wait_ready();
+    let mut client = Client::connect(&har.socket()).expect("connect to backend socket");
+
+    let started = client
+        .call("sensors.stream", json!({ "enabled": true, "intervalMs": 250 }))
+        .unwrap();
+    assert_eq!(started["result"]["streaming"], json!(true), "{started}");
+
+    let event = client.next_event().expect("a sensors event must arrive");
+    assert_eq!(event["event"], "sensors", "{event}");
+    let payload = event["data"].clone();
+
+    // The event has to look exactly like the snapshot `state.all` serves, media
+    // included. Compared key-for-key so a field added to one path only fails.
+    let all = client.call("state.all", json!({})).unwrap();
+    let reference = all["result"]["sensors"].clone();
+    let mut event_keys: Vec<&String> = payload.as_object().expect("object snapshot").keys().collect();
+    let mut reference_keys: Vec<&String> =
+        reference.as_object().expect("object snapshot").keys().collect();
+    event_keys.sort();
+    reference_keys.sort();
+    assert_eq!(event_keys, reference_keys, "event keys must match state.all.sensors");
+
+    // The five media keys are the ones the raw snapshot fakes; they must carry
+    // the live values, not the placeholders.
+    for key in [
+        "notifications",
+        "notifyActive",
+        "notifyError",
+        "nowPlaying",
+        "sessionBusOk",
+    ] {
+        assert_eq!(
+            payload.get(key),
+            reference.get(key),
+            "'{key}' in the sensors event must be the live media value"
+        );
+    }
+    assert!(
+        payload["nowPlaying"].get("valid").is_some(),
+        "nowPlaying must be a media object, not a placeholder: {payload}"
+    );
+
+    // Disabling and re-timing must interrupt the worker's wait. Raise the
+    // interval to 3 s, drain, then lower it to 250 ms: an event within ~1.5 s
+    // is only possible if the sleep was cut short.
+    let slow = client
+        .call("sensors.stream", json!({ "enabled": true, "intervalMs": 3000 }))
+        .unwrap();
+    assert_eq!(slow["result"]["streaming"], json!(true), "{slow}");
+    client.set_read_timeout(Duration::from_millis(400)).unwrap();
+    while client.next_event().is_ok() {}
+    client
+        .call("sensors.stream", json!({ "enabled": true, "intervalMs": 250 }))
+        .unwrap();
+    client.set_read_timeout(Duration::from_millis(1500)).unwrap();
+    let quick = client
+        .next_event()
+        .expect("a shortened interval must deliver an event at once, not after the old 3 s");
+    assert_eq!(quick["event"], "sensors", "{quick}");
+
+    // After a disable the stream must stop. One event can still be in flight
+    // (the worker may have been polling when the request landed); a second one
+    // means the worker kept its timer.
+    let stopped = client
+        .call("sensors.stream", json!({ "enabled": false }))
+        .unwrap();
+    assert_eq!(stopped["result"]["streaming"], json!(false), "{stopped}");
+    client.set_read_timeout(Duration::from_millis(1200)).unwrap();
+    let mut stragglers = 0;
+    loop {
+        match client.next_event() {
+            Ok(event) => {
+                if event["event"] == "sensors" {
+                    stragglers += 1;
+                }
+            }
+            // Timed out: the socket is quiet apart from unrelated events.
+            Err(_) => break,
+        }
+    }
+    assert!(
+        stragglers <= 1,
+        "a disable must stop the sensors stream, saw {stragglers} events after it"
+    );
+}
+
+/// A disconnected client must release its socket immediately. The event
+/// forwarder owns the write half, so if it is left parked in `recv()` the socket
+/// is never closed and every finished connection leaks one fd.
+#[test]
+fn b1_closed_connections_release_their_sockets() {
+    let har = Harness::start("fds").expect("spawn edgeline-backend");
+    har.wait_ready();
+    let fd_dir = format!("/proc/{}/fd", har.backend_pid());
+    let open_fds = || std::fs::read_dir(&fd_dir).map(|d| d.count()).unwrap_or(0);
+
+    // Warm up: served connections, so lazily created state is in the baseline.
+    for _ in 0..2 {
+        let mut c = Client::connect(&har.socket()).unwrap();
+        c.call("backend.info", json!({})).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let baseline = open_fds();
+    assert!(baseline > 0, "cannot read {fd_dir}");
+
+    for _ in 0..20 {
+        let mut c = Client::connect(&har.socket()).unwrap();
+        c.call("backend.info", json!({})).unwrap();
+        drop(c);
+    }
+    // Give the accept loop and the aborted forwarders a moment to unwind.
+    std::thread::sleep(Duration::from_secs(1));
+    let after = open_fds();
+    assert!(
+        after <= baseline + 2,
+        "closed connections leaked fds: baseline {baseline}, after 20 connect/close cycles {after}"
     );
 }
 

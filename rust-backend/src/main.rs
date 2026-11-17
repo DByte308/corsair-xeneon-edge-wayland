@@ -23,7 +23,7 @@ use std::{
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
-    sync::{Mutex, Semaphore, watch},
+    sync::{Mutex, Notify, Semaphore, broadcast, watch},
 };
 
 const MAX_MESSAGE: usize = 1024 * 1024;
@@ -46,6 +46,15 @@ struct Backend {
     profiles: profiles::ProfileStore,
     rules: profiles::RulesStore,
     socket_path: std::path::PathBuf,
+    /// Per-process fan-out of unsolicited `{event,data}` messages to every
+    /// connected client, mirroring `RpcServer::broadcast()` in the C++ agent.
+    /// `serve()` subscribes a receiver per connection and a forwarder task
+    /// writes each event onto that connection.
+    broadcast: broadcast::Sender<Value>,
+    /// Wakes the sensor-streaming worker when `sensors.stream` changes, so a
+    /// new interval or a disable takes effect immediately instead of after the
+    /// current sleep expires.
+    streaming_wake: Notify,
 }
 
 fn uid() -> u32 {
@@ -222,23 +231,9 @@ impl Backend {
         let media = self.media.snapshot().await;
         let sensors = {
             let guard = self.sensors.lock().unwrap_or_else(|p| p.into_inner());
-            let mut snap = sensors::snapshot_json(guard.latest());
-            if let Some(obj) = snap.as_object_mut() {
-                for k in ["notifications", "notifyActive", "notifyError", "nowPlaying", "sessionBusOk"] {
-                    if let Some(v) = media.get(k) {
-                        obj.insert(k.to_string(), v.clone());
-                    }
-                }
-            }
-            snap
+            with_media(sensors::snapshot_json(guard.latest()), &media)
         };
-        let rules = {
-            let cfg = profiles::rules_from_json(&self.rules.load());
-            let mut r = profiles::rules_to_json(&cfg);
-            r["watching"] = json!(false);
-            r["path"] = json!(self.rules.path().display().to_string());
-            r
-        };
+        let rules = self.rules_snapshot();
         let (touch_state, touch_config) = {
             // One lock acquisition for both read-only snapshots; avoid ever
             // holding two guards on std::sync::Mutex simultaneously (non-reentrant).
@@ -257,6 +252,56 @@ impl Backend {
             touch_config,
         ))
 
+    }
+
+    /// Push an unsolicited event to every connected client (the C++ agent's
+    /// Push an unsolicited event to every connected client (the C++ agent's
+    /// `RpcServer::broadcast`). Each `serve()` connection subscribes a receiver
+    /// and forwards the `{event,data}` line. A dropped receiver (client gone)
+    /// is ignored, and a lagged one just misses intermediate events.
+    fn broadcast(&self, event: &str, data: Value) {
+        let _ = self
+            .broadcast
+            .send(json!({ "event": event, "data": data }));
+    }
+
+    /// rules.json as the UI sees it. The Rust backend has no X11 focus watcher,
+    /// so rules cannot be armed the way the C++ agent arms them.
+    fn rules_snapshot(&self) -> Value {
+        let cfg = profiles::rules_from_json(&self.rules.load());
+        let mut snapshot = profiles::rules_to_json(&cfg);
+        snapshot["watching"] = json!(false);
+        snapshot["path"] = json!(self.rules.path().display().to_string());
+        snapshot
+    }
+
+    /// Broadcast the touch state, mirroring the C++ agent's `stateChanged`
+    /// push. Call only after the mutating guard on `self.touch` is dropped.
+    fn broadcast_touch(&self) {
+        let state = {
+            let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+            guard.state()
+        };
+        self.broadcast("touch", state);
+    }
+
+    /// Push the sensors snapshot after a mutation that changes what it shows,
+    /// but only while a client asked for the stream — the C++ agent gates these
+    /// on `m_sensorStreaming` too.
+    async fn broadcast_sensors_if_streaming(&self) {
+        let streaming = {
+            let guard = self.sensors.lock().unwrap_or_else(|p| p.into_inner());
+            guard.streaming()
+        };
+        if !streaming {
+            return;
+        }
+        let media = self.media.snapshot().await;
+        let snapshot = {
+            let guard = self.sensors.lock().unwrap_or_else(|p| p.into_inner());
+            with_media(sensors::snapshot_json(guard.latest()), &media)
+        };
+        self.broadcast("sensors", snapshot);
     }
 
     async fn dispatch(&self, request: &Request) -> Result<Value> {
@@ -324,8 +369,13 @@ impl Backend {
                 let device = guard.as_ref().context("hid device unavailable")?;
                 device.set_brightness(value as u8, &hid::Confirmation::approve(reason))?;
                 let params = device.screen_params().context("screen parameters unavailable")?;
-                Ok(json!({ "available": true, "brightness": params.brightness,
-                    "backlight": params.backlight, "contrast": params.contrast }))
+                let snapshot = json!({ "available": true, "brightness": params.brightness,
+                    "backlight": params.backlight, "contrast": params.contrast });
+                drop(guard);
+                // Mirror Api::setScreenParam(): every other client's screen panel
+                // follows the slider it did not touch.
+                self.broadcast("screen", snapshot.clone());
+                Ok(snapshot)
             }
             "ddc.state" => Ok(self.ddc.snapshot()),
             "ddc.get" => {
@@ -396,8 +446,14 @@ impl Backend {
             }
             "touch.setMode" => {
                 let mode = parameter("mode")?;
-                let mut guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
-                guard.set_mode(mode)
+                let result = {
+                    let mut guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.set_mode(mode)
+                };
+                if result.is_ok() {
+                    self.broadcast_touch();
+                }
+                result
             }
             "touch.probe" => {
                 let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
@@ -409,8 +465,14 @@ impl Backend {
                 Ok(guard.set_streaming(on))
             }
             "touch.applyOutputMapping" => {
-                let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
-                guard.apply_output_mapping()
+                let result = {
+                    let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.apply_output_mapping()
+                };
+                if result.is_ok() {
+                    self.broadcast_touch();
+                }
+                result
             }
             "touch.setMatrix" => {
                 let values = request
@@ -419,20 +481,38 @@ impl Backend {
                     .and_then(Value::as_array)
                     .context("'matrix' must have 9 numbers")?;
                 let matrix: Vec<f64> = values.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect();
-                let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
-                guard.set_matrix(&matrix)
+                let result = {
+                    let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.set_matrix(&matrix)
+                };
+                if result.is_ok() {
+                    self.broadcast_touch();
+                }
+                result
             }
             "touch.calibrate" => {
-                let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
-                guard.calibrate(&request.params)
+                let result = {
+                    let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.calibrate(&request.params)
+                };
+                if result.is_ok() {
+                    self.broadcast_touch();
+                }
+                result
             }
             "touch.config" => {
                 let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
                 Ok(guard.config_snapshot())
             }
             "touch.setConfig" => {
-                let mut guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
-                guard.set_config(&request.params)
+                let result = {
+                    let mut guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.set_config(&request.params)
+                }?;
+                // Mirror Api::touch.setConfig: the saved config is pushed back so
+                // every open settings pane shows what was actually stored.
+                self.broadcast("touchConfig", result.clone());
+                Ok(result)
             }
             "controller.ensure" => {
                 self.kwin.ensure().await?;
@@ -485,10 +565,16 @@ impl Backend {
                     .params
                     .get("intervalMs")
                     .and_then(Value::as_u64)
-                    .unwrap_or(1000) as u32;
-                let mut guard =
-                    self.sensors.lock().unwrap_or_else(|p| p.into_inner());
-                guard.set_streaming(enabled, interval_ms);
+                    .unwrap_or(1000)
+                    .min(u32::MAX as u64) as u32;
+                {
+                    let mut guard =
+                        self.sensors.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.set_streaming(enabled, interval_ms);
+                }
+                // Wake the worker so the new interval (or the disable) takes
+                // effect now, not after the current sleep expires.
+                self.streaming_wake.notify_one();
                 Ok(json!({ "streaming": enabled }))
             }
             "sensors.interfaces" => Ok(sensors::interfaces_json(
@@ -532,19 +618,27 @@ impl Backend {
                     .filter_map(|x| x.as_str().map(String::from))
                     .filter(|s| !s.is_empty())
                     .collect();
-                let mut guard =
-                    self.sensors.lock().unwrap_or_else(|p| p.into_inner());
-                let all = guard.enumerate_gpus();
-                let arr: Vec<Value> = all.iter().map(sensors::gpu_json).collect();
-                let keep: Vec<String> = all
-                    .iter()
-                    .filter(|g| asked.contains(&g.id))
-                    .map(|g| g.id.clone())
-                    .collect();
-                if !asked.is_empty() && keep.is_empty() {
-                    bail!("none of those GPUs are in this machine");
-                }
-                guard.set_gpu_selection(keep.clone());
+                // Scoped so the non-Send guard is gone before the await below;
+                // `drop(guard)` is not enough for the generator's Send analysis.
+                let (arr, keep) = {
+                    let mut guard =
+                        self.sensors.lock().unwrap_or_else(|p| p.into_inner());
+                    let all = guard.enumerate_gpus();
+                    let arr: Vec<Value> = all.iter().map(sensors::gpu_json).collect();
+                    let keep: Vec<String> = all
+                        .iter()
+                        .filter(|g| asked.contains(&g.id))
+                        .map(|g| g.id.clone())
+                        .collect();
+                    if !asked.is_empty() && keep.is_empty() {
+                        bail!("none of those GPUs are in this machine");
+                    }
+                    guard.set_gpu_selection(keep.clone());
+                    (arr, keep)
+                };
+                // Push the change straight out so the panel redraws on the click
+                // rather than on the next poll (Api.cpp:1468).
+                self.broadcast_sensors_if_streaming().await;
                 Ok(json!({ "gpus": arr, "selected": keep }))
             }
             "media.control" => {
@@ -556,6 +650,9 @@ impl Backend {
             }
             "notifications.clear" => {
                 self.media.clear_notifications();
+                // The badge is drawn from the sensors snapshot, so a clear has to
+                // be pushed the way Api::notifications.clear does.
+                self.broadcast_sensors_if_streaming().await;
                 Ok(json!({ "ok": true }))
             }
             "media.snapshot" => Ok(self.media.snapshot().await),
@@ -595,32 +692,33 @@ impl Backend {
                 let body = self.capture_profile_body()?;
                 let saved = self.profiles.save(name, &body)?;
                 self.profiles.set_active(name);
+                // Mirror Api::profiles.save: every other client reloads its list.
+                self.broadcast("profiles", json!({ "changed": true }));
                 Ok(json!({"name": saved}))
             }
             "profiles.delete" => {
                 let name = parameter("name")?;
                 self.profiles.remove(name)?;
+                self.broadcast("profiles", json!({ "changed": true }));
                 Ok(json!({"deleted": true}))
             }
             "profiles.rename" => {
                 let from = parameter("from")?;
                 let to = parameter("to")?;
                 self.profiles.rename(from, to)?;
+                self.broadcast("profiles", json!({ "changed": true }));
                 Ok(json!({"renamed": true}))
             }
             "profiles.apply" => {
                 let name = parameter("name")?;
-                self.apply_profile(name)
+                let result = self.apply_profile(name)?;
+                // Api::profiles.apply broadcasts the newly active profile even
+                // when some values were skipped, because that is still the move
+                // the panel has to reflect.
+                self.broadcast("profiles", json!({ "active": name }));
+                Ok(result)
             }
-            "rules.get" => {
-                let cfg = profiles::rules_from_json(&self.rules.load());
-                let mut snapshot = profiles::rules_to_json(&cfg);
-                // The Rust backend has no X11 focus watcher, so rules cannot be
-                // armed the way the C++ agent arms them; `watching` is false.
-                snapshot["watching"] = json!(false);
-                snapshot["path"] = json!(self.rules.path().display().to_string());
-                Ok(snapshot)
-            }
+            "rules.get" => Ok(self.rules_snapshot()),
             "rules.set" => {
                 // Validate against what was sent, not against what fromJson kept:
                 // fromJson silently drops a rule with no pattern, so such a rule
@@ -653,6 +751,9 @@ impl Backend {
                 }
                 let snapshot = profiles::rules_to_json(&cfg);
                 self.rules.save(&snapshot)?;
+                // Mirror Api::rules.set: push the stored rules out so the other
+                // open panes see the save without a reload.
+                self.broadcast("rules", self.rules_snapshot());
                 Ok(snapshot)
             }
             "color.state" => {
@@ -687,7 +788,7 @@ impl Backend {
                     .get("manual")
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
-                Ok(match self.updates.check(manual).await {
+                let outcome = match self.updates.check(manual).await {
                     updates::Outcome::Available { version, url } => {
                         json!({ "state": "available", "version": version, "url": url })
                     }
@@ -698,7 +799,13 @@ impl Backend {
                         json!({ "state": "failed", "error": error })
                     }
                     updates::Outcome::Quiet => json!({ "state": "quiet" }),
-                })
+                };
+                // Api forwards the UpdateChecker signals as an unsolicited
+                // `update` event; `quiet` (throttled or disabled) stays local.
+                if outcome.get("state").and_then(Value::as_str) != Some("quiet") {
+                    self.broadcast("update", outcome.clone());
+                }
+                Ok(outcome)
             }
             "updates.settings" => {
                 if let Some(enabled) = request.params.get("enabled").and_then(Value::as_bool) {
@@ -830,6 +937,40 @@ async fn serve(stream: UnixStream, backend: Arc<Backend>) -> Result<()> {
     }
     let (read, write) = stream.into_split();
     let writer = Arc::new(Mutex::new(write));
+    // Fan-out channel: subscribe this connection to the per-process event
+    // broadcast and relay every `{event,data}` line onto its own socket. The
+    // forwarder shares `writer` with the request tasks, so all writes are
+    // serialized. It is held in an `AbortOnDrop` because dropping the read half
+    // does not close the socket while the forwarder still owns the write half:
+    // a plain spawn would park in `recv()` after the client disconnects and leak
+    // one fd per finished connection until some event happened to fail on it.
+    let _forwarder = AbortOnDrop(tokio::spawn({
+        let writer = writer.clone();
+        let mut events = backend.broadcast.subscribe();
+        async move {
+            loop {
+                let event = match events.recv().await {
+                    Ok(v) => v,
+                    Err(broadcast::error::RecvError::Lagged(missed)) => {
+                        // Sensors tolerate a gap (a newer snapshot follows); the
+                        // mutation events queued for this channel do not, so at
+                        // least leave a trace rather than dropping silently.
+                        eprintln!("event fan-out lagged, dropped {missed} event(s)");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                let mut data = match serde_json::to_vec(&event) {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                };
+                data.push(b'\n');
+                if writer.lock().await.write_all(&data).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }));
     let limit = Arc::new(Semaphore::new(32));
     let mut reader = BufReader::new(read);
     while let Some(line) = read_message(&mut reader).await? {
@@ -868,6 +1009,55 @@ async fn serve(stream: UnixStream, backend: Arc<Backend>) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// Aborts its task when dropped. Used for a connection's event forwarder so
+/// every `serve()` exit path tears it down, including `?` returns.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Poll the sensor source on the blocking pool and return its raw snapshot.
+/// `SensorSource::poll` shells out to `nvidia-smi`, `systemctl` and `lspci`, so
+/// running it on a tokio worker would block that thread for the duration of the
+/// spawns (tens of ms, seconds under GPU/systemd pressure) while every other
+/// `sensors.*` arm queues on the same mutex.
+async fn poll_sensors(backend: &Arc<Backend>) -> Value {
+    let inner = backend.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut guard = inner.sensors.lock().unwrap_or_else(|p| p.into_inner());
+        guard.poll();
+        sensors::snapshot_json(guard.latest())
+    })
+    .await
+    .unwrap_or_else(|error| json!({ "error": format!("sensor poll failed: {error}") }))
+}
+
+/// Merge the live media now-playing/notifications into a sensors snapshot, as
+/// `SensorSource::snapshot` does in the C++ agent. `snapshot_json` hardcodes
+/// placeholders for these keys, so every caller that hands the snapshot to the
+/// UI — `state.all` and the `sensors` broadcast alike — has to merge them, or
+/// the now-playing tile, the notification badge and the session-bus indicator
+/// get blanked.
+fn with_media(mut snapshot: Value, media: &Value) -> Value {
+    if let Some(obj) = snapshot.as_object_mut() {
+        for key in [
+            "notifications",
+            "notifyActive",
+            "notifyError",
+            "nowPlaying",
+            "sessionBusOk",
+        ] {
+            if let Some(value) = media.get(key) {
+                obj.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    snapshot
 }
 
 fn private_directory(path: &Path) -> Result<()> {
@@ -933,6 +1123,10 @@ async fn main() -> Result<()> {
     // it fetches capabilities and seeds the standard reads so a UI connecting
     // later has real values instead of placeholders.
     let ddc = Arc::new(ddc::Ddc::new(ddc::DdcConfig::default()));
+    // Created before the backend so the DDC worker can announce its finished
+    // jobs (`ddc`/`ddcLog`) on the same fan-out channel the RPC layer uses.
+    let (broadcast_tx, broadcast_rx) = broadcast::channel(256);
+    ddc.set_event_sink(broadcast_tx.clone());
     ddc.start();
     let ddc_worker = ddc.clone();
     tokio::spawn(async move { ddc_worker.run().await; });
@@ -949,7 +1143,14 @@ async fn main() -> Result<()> {
         profiles,
         rules,
         socket_path: socket.clone(),
+        broadcast: broadcast_tx,
+        streaming_wake: Notify::new(),
     });
+    // The initial receiver is not needed: `broadcast` closes only when the
+    // Sender is dropped, and later `subscribe()` calls work with zero
+    // receivers. It is dropped here rather than parked, so the sender's `send`
+    // result reflects real subscribers.
+    drop(broadcast_rx);
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     println!("{}", json!({"event":"ready","socket":socket}));
@@ -962,6 +1163,40 @@ async fn main() -> Result<()> {
                 if unsafe { libc::getppid() } as u32 != expected {
                     let _ = parent_shutdown.send(true);
                     break;
+                }
+            }
+        });
+    }
+    // Sensor streaming broadcast: while `sensors.stream` has been enabled, poll
+    // the source at its requested interval and push the snapshot to every
+    // connected client. This is the only ticked broadcast; the snapshot events
+    // are otherwise emitted by their dispatch arms after a mutation. The
+    // interval sleep races `streaming_wake`, so enabling, disabling or changing
+    // the interval takes effect immediately instead of after up to one interval.
+    {
+        let backend = backend.clone();
+        tokio::spawn(async move {
+            loop {
+                let (enabled, interval_ms) = {
+                    let guard = backend.sensors.lock().unwrap_or_else(|p| p.into_inner());
+                    (guard.streaming(), guard.streaming_interval())
+                };
+                if !enabled {
+                    backend.streaming_wake.notified().await;
+                    continue;
+                }
+                // The poll shells out (nvidia-smi, systemctl, lspci); keep it off
+                // the runtime worker so other RPC arms are not stalled by it.
+                let snapshot = poll_sensors(&backend).await;
+                // Media is merged in here, exactly as `state.all` does: the
+                // dashboard replaces `state.sensors` wholesale on each event,
+                // so the bare snapshot's placeholder now-playing/notifications
+                // would blank those tiles every tick.
+                let media = backend.media.snapshot().await;
+                backend.broadcast("sensors", with_media(snapshot, &media));
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(interval_ms as u64)) => {}
+                    _ = backend.streaming_wake.notified() => {}
                 }
             }
         });

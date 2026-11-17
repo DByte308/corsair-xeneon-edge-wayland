@@ -24,7 +24,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, broadcast};
 
 /// Names for the VCP codes the Edge UI actually drives.
 pub mod vcp {
@@ -264,7 +264,19 @@ struct Core {
     ready: bool,
     message: String,
     log: VecDeque<String>,
+    /// Log lines this job produced, drained by `process_job` to emit the
+    /// `ddcLog` broadcast. Kept apart from `log` because that one is capped and
+    /// drops from the front, so a length check could not identify new lines.
+    pending_log: Vec<String>,
     seed_standard: bool,
+}
+
+impl Core {
+    /// Append a ddcutil log line, and queue it for the `ddcLog` broadcast.
+    fn log_line(&mut self, line: String) {
+        self.log.push_back(line.clone());
+        self.pending_log.push(line);
+    }
 }
 
 /// Configuration for [`Ddc::new`].
@@ -290,6 +302,10 @@ impl Default for DdcConfig {
 pub struct Ddc {
     core: Arc<Mutex<Core>>,
     notify: Arc<Notify>,
+    /// Where finished jobs are announced, so the RPC layer can fan them out as
+    /// the C++ agent's `ddc`/`ddcLog` events. Set once by `main`; a `Ddc` used
+    /// without a sink (every unit test) simply stays silent.
+    events: Arc<Mutex<Option<broadcast::Sender<Value>>>>,
 }
 
 impl Ddc {
@@ -308,10 +324,17 @@ impl Ddc {
                 ready: false,
                 message: String::new(),
                 log: VecDeque::new(),
+                pending_log: Vec::new(),
                 seed_standard: config.seed_standard,
             })),
             notify: Arc::new(Notify::new()),
+            events: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Announce completed jobs on this channel as `ddc`/`ddcLog` events.
+    pub fn set_event_sink(&self, sink: broadcast::Sender<Value>) {
+        *self.events.lock().unwrap_or_else(|p| p.into_inner()) = Some(sink);
     }
 
     /// Inject a fake-ddcutil state path for offline tests.
@@ -505,7 +528,7 @@ impl Ddc {
                     core.bus = bus;
                     core.ready = true;
                     core.message = format!("Edge found on i2c bus {bus}");
-                    core.log.push_back(format!("detect: bus {bus}"));
+                    core.log_line(format!("detect: bus {bus}"));
                     if core.seed_standard {
                         core.queue
                             .push_back(Job::new(JobKind::Capabilities, 0, 0));
@@ -528,22 +551,20 @@ impl Ddc {
                     core.message =
                         "Edge not found by ddcutil (is it connected via DisplayPort/HDMI?)"
                             .to_string();
-                    core.log.push_back("detect: Edge not found".to_string());
+                    core.log_line("detect: Edge not found".to_string());
                 }
             }
             JobKind::Capabilities => {
                 if ok {
                     core.caps = parse_capabilities(&text);
-                    core.log.push_back("capabilities read".to_string());
+                    core.log_line("capabilities read".to_string());
                 } else {
-                    core.log
-                        .push_back(format!("capabilities failed: {}", text.trim()));
+                    core.log_line(format!("capabilities failed: {}", text.trim()));
                 }
             }
             JobKind::Get => {
                 if !ok {
-                    core.log
-                        .push_back(format!("getvcp 0x{:x} failed: {}", job.code, text.trim()));
+                    core.log_line(format!("getvcp 0x{:x} failed: {}", job.code, text.trim()));
                 } else {
                     match parse_getvcp(&text) {
                         Some(GetValue::Continuous { current, max }) => {
@@ -557,8 +578,7 @@ impl Ddc {
                                     max,
                                 },
                             );
-                            core.log
-                                .push_back(format!("getvcp {:02x} -> {}", job.code, current));
+                            core.log_line(format!("getvcp {:02x} -> {}", job.code, current));
                         }
                         Some(GetValue::NonContinuous(value)) => {
                             core.vcp.insert(
@@ -568,11 +588,10 @@ impl Ddc {
                                     max: 0,
                                 },
                             );
-                            core.log
-                                .push_back(format!("getvcp {:02x} -> {}", job.code, value));
+                            core.log_line(format!("getvcp {:02x} -> {}", job.code, value));
                         }
                         None => {
-                            core.log.push_back(format!(
+                            core.log_line(format!(
                                 "getvcp 0x{:x}: unparsed output: {}",
                                 job.code,
                                 text.trim()
@@ -583,16 +602,14 @@ impl Ddc {
             }
             JobKind::Set => {
                 if !ok {
-                    core.log
-                        .push_back(format!("setvcp 0x{:x} failed: {}", job.code, text.trim()));
+                    core.log_line(format!("setvcp 0x{:x} failed: {}", job.code, text.trim()));
                 } else {
                     let max = core.max.get(&job.code).copied().unwrap_or(0);
                     core.vcp.insert(job.code, VcpState {
                         current: job.value as i32,
                         max,
                     });
-                    core.log
-                        .push_back(format!("setvcp {:02x} {} -> ok", job.code, job.value));
+                    core.log_line(format!("setvcp {:02x} {} -> ok", job.code, job.value));
                     // --noverify keeps writes fast, so ask the panel what it made
                     // of this one rather than trusting it. Skipped while another
                     // write or a read of the same code is still queued, since
@@ -609,6 +626,22 @@ impl Ddc {
         }
         while core.log.len() > 200 {
             core.log.pop_front();
+        }
+        // Announce this job the way the C++ agent does: one `ddcLog` line per
+        // appended message, then the refreshed `ddc` snapshot (Api.cpp:129-205).
+        // The guard is dropped first so `snapshot()` may take it again.
+        let lines: Vec<String> = core.pending_log.drain(..).collect();
+        drop(core);
+        let sink = self
+            .events
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(sink) = sink {
+            for line in lines {
+                let _ = sink.send(json!({ "event": "ddcLog", "data": { "line": line } }));
+            }
+            let _ = sink.send(json!({ "event": "ddc", "data": self.snapshot() }));
         }
     }
 }
@@ -875,6 +908,64 @@ mod tests {
         let preset = getvcp_value(&ddc, vcp::PRESET);
         assert_eq!(preset.current, 0x0b, "default preset is User 1");
         assert_eq!(getvcp_value(&ddc, vcp::GAIN_RED).max, 255);
+    }
+
+    #[tokio::test]
+    async fn a_finished_job_announces_ddc_and_its_log_lines() {
+        // The RPC layer's `ddc`/`ddcLog` fan-out depends on this sink: the C++
+        // agent broadcasts both from DdcClient's signals, and without it the
+        // picture sliders have no live feedback on the Rust path.
+        let dir = tempdir_state();
+        let ddc = Ddc::new(DdcConfig {
+            ddcutil: Some(fake_ddcutil()),
+            seed_standard: false,
+        });
+        let (tx, mut rx) = broadcast::channel(32);
+        ddc.set_event_sink(tx);
+        ddc.set_fake_state(dir.join("state"));
+
+        ddc.start();
+        ddc.process_all().await;
+
+        // One snapshot event per finished job, plus one ddcLog line per message.
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        let snapshots: Vec<&Value> = events.iter().filter(|e| e["event"] == "ddc").collect();
+        assert!(!snapshots.is_empty(), "a finished job must announce `ddc`");
+        let last = snapshots.last().unwrap();
+        assert_eq!(last["data"]["ready"], json!(true), "{last}");
+        assert!(
+            last["data"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("Edge found on i2c bus"),
+            "{last}"
+        );
+
+        let logs: Vec<&Value> = events.iter().filter(|e| e["event"] == "ddcLog").collect();
+        assert!(
+            logs.iter().any(|e| e["data"]["line"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("detect: bus")),
+            "the detect line must reach ddcLog, got {events:?}"
+        );
+        // Drained: a second job does not re-announce the first one's lines.
+        ddc.get_vcp(vcp::BRIGHTNESS);
+        ddc.process_all().await;
+        let mut second = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            second.push(event);
+        }
+        assert!(
+            !second
+                .iter()
+                .any(|e| e["event"] == "ddcLog"
+                    && e["data"]["line"].as_str().unwrap_or("").starts_with("detect: bus")),
+            "log lines must be announced once: {second:?}"
+        );
     }
 
     // Helpers for the fixture test: pull the last settled value / count reads.

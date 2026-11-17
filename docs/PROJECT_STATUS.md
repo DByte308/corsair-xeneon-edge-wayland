@@ -72,7 +72,17 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
     arms; live-verified on a real session bus; field-level parity vs `Api.cpp`
     `systemSnapshot()` and `state.all`).
   - event-broadcast channel (per-connection writer registry) so the Rust backend
-    can push the events the dashboard relies on. ← **next blocker**
+    can push the events the dashboard relies on. ✅ **DONE** (task #17): a
+    process-wide `tokio::sync::broadcast` fan-out on `Backend`, one forwarder per
+    connection, and `{event,data}` lines on the same sockets. Emitted today:
+    `sensors` (streamed at the client's interval), `screen`, `touch`,
+    `touchConfig`, `profiles` (`{active}`/`{changed}`), `rules`, `update`,
+    `ddc`, `ddcLog`. Still missing, each needing a watcher the Rust backend does
+    not have: `device` (hotplug), `focus` (rules arming), `touch.point`/`gesture`
+    (XInput2 stream) and `ui.action` (dashboard actions currently fall through to
+    KWin). The `sensors` event carries the merged media fields: `state.all` and
+    the event share `with_media`, so the dashboard's now-playing tile and
+    notification badge survive each tick.
 - **B3** Make Tauri the default build / entry.
 - **B4** Remove the Electron \`ui/\` host + \`window-bridge.py\` + legacy runtime
   split — only after the visible acceptance gate (C) passes.
@@ -87,15 +97,30 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   backend** (cutover blocker #16, landed). The UI calls `state.all` on every
   connect (`app.js refreshAll`, `dashboard.js start`, `main.js primeTrayState`),
   and today it is still masked by the C++ agent owning the generic socket
-  (`edgeline.sock`). Once the event-broadcast channel lands (next blocker), the
-  Rust backend is end-to-end parity for the state snapshots. `state.all`
+  (`edgeline.sock`). With the event-broadcast channel landed, the Rust backend
+  is end-to-end parity for the state snapshots and the events listed below.
+  `state.all`
   reproduces the nine C++ keys in order (`system/device/ddc/screen/touch/sensors/
   rules/color/touchConfig`).
-- **No event-broadcast channel.** The C++ agent pushes `ddc`, `screen`, `touch`,
-  `sensors`, `ddcLog`, `device`, `rules`, `touchConfig` events; the Rust backend
-  is request/response only and has no per-connection writer registry to push to.
-  Dashboard tiles and live updates depend on `api.onEvent`. Also masked today by
-  the C++ agent, and cutover-critical. ← **next blocker (todo #17)**.
+- **Event broadcast landed** (task #17, cutover blocker). The UI's
+  `api.onEvent` paths now have a Rust source: `sensors` streaming (interval
+  clamped to >= 250 ms, interruptible so a re-time or disable applies at once,
+  and served while the flag is set even with no client, like the C++ agent),
+  plus `screen`, `touch`, `touchConfig`, `profiles`, `rules`, `update`, `ddc`
+  and `ddcLog` pushed from the dispatch arms or the DDC worker. Two defects the
+  audit caught in the first cut are fixed and regression-tested: the `sensors`
+  event used to carry placeholder media (it blanked the dashboard's now-playing
+  tile and notification badge every second), and a disconnected client leaked
+  one fd because the event forwarder stayed parked owning the write half
+  (`b1_sensors_stream_broadcasts_merged_snapshots`,
+  `b1_closed_connections_release_their_sockets`).
+- **No event-broadcast channel for `device`, `focus`, `touch.point`/`gesture`,
+  `ui.action`.** Those four need machinery the Rust backend does not have yet: a
+  hotplug watcher (udev/HID), the X11 focus watcher (so `rules.get` still
+  reports `watching:false`), the XInput2 touch stream (the `touch.stream` arm
+  turns on nothing), and `launchpad.action` routing dashboard actions to the UI
+  instead of KWin. Dashboard tiles that follow sensors, DDC, profiles and rules
+  now update live; anything driven by those four does not.
 - Rust backend still reports `hardware: "legacy C++ agent (not migrated)"` in
   `backend.info` — the C++ agent is still the running hardware owner for the
   Electron host; the Rust backend is invoked alongside it during dev. The

@@ -1064,8 +1064,8 @@ pub struct SensorSource {
     nvidia_gpus: Vec<GpuInfo>,
     amd_names: HashMap<String, String>,
     snap: Snapshot,
-    #[allow(dead_code)]
     streaming: bool,
+    streaming_interval_ms: u32,
 }
 
 impl SensorSource {
@@ -1084,6 +1084,7 @@ impl SensorSource {
             amd_names: HashMap::new(),
             snap: Snapshot::default(),
             streaming: false,
+            streaming_interval_ms: 1000,
         }
     }
 
@@ -1107,15 +1108,27 @@ impl SensorSource {
         self.gpu_selection = ids;
     }
 
-    /// This Rust backend answers one request per socket line, so there is no
-    /// event-broadcast channel to push snapshots on. Setting streaming on does
-    /// the immediate poll the C++ start() does and records the state; the
-    /// periodic delivery is a later transport concern.
-    pub fn set_streaming(&mut self, enabled: bool, _interval_ms: u32) {
+    /// This Rust backend now has an event-broadcast channel, so setting
+    /// streaming on does the immediate poll the C++ start() does and records
+    /// the state; a background worker in main.rs re-polls at the stored
+    /// interval and broadcasts the snapshot while `streaming` is true.
+    pub fn set_streaming(&mut self, enabled: bool, interval_ms: u32) {
         self.streaming = enabled;
+        self.streaming_interval_ms = interval_ms.max(250);
         if enabled {
             self.poll();
         }
+    }
+
+    /// Whether a background worker should keep broadcasting sensor snapshots.
+    pub fn streaming(&self) -> bool {
+        self.streaming
+    }
+
+    /// The poll interval (ms) the streaming worker uses. Clamped at construction
+    /// to be >= 250ms so a worker isn't spun at 0/very high frequency.
+    pub fn streaming_interval(&self) -> u32 {
+        self.streaming_interval_ms
     }
 
     fn amd_gpu_name(&mut self, g: &AmdGpuSample) -> String {
