@@ -12,7 +12,8 @@ const id = '{12345678-1234-1234-1234-123456789abc}';
 function window(caption, output, app='test', skipTaskbar=false) {
   return {internalId:id,caption,output,resourceClass:app,normalWindow:true,active:false,minimized:false,skipTaskbar,
     frameGeometry:{x:467,y:2880,width:96,height:720},keepAbove:false,
-    frameGeometryChanged:signal(),captionChanged:signal(),minimizedChanged:signal(),outputChanged:signal()};
+    frameGeometryChanged:signal(),captionChanged:signal(),minimizedChanged:signal(),outputChanged:signal(),
+    fullScreenChanged:signal(),keepAboveChanged:signal()};
 }
 const game = window('VanguardGalaxy',edge,'steam_app_3471800');
 const elsewhere = window('Private document',other);
@@ -38,6 +39,19 @@ assert.deepEqual(latest.screens.map((s)=>[s.name,s.workarea.x,s.workarea.width])
   'the feed reports compositor work areas, not only app windows');
 assert.deepEqual(latest.panel.map((p)=>[p.title,p.x,p.width,p.keepAbove]),[['EdgeLine',467,96,false],['EdgeLine dashboard',467,96,false]],
   'panel windows are reported so a displaced rail is visible');
+// The active window rides the same report and drives per-app rules, so the
+// _NET_WM_STATE names have to be the ones rules.json matches on.
+game.active = true; game.fullScreen = true; game.maximizeMode = 3;
+workspace.activeWindow = game;
+report();
+assert.equal(latest.focus.valid, true, 'the feed carries the active window');
+assert.equal(latest.focus.wmClass, 'steam_app_3471800');
+assert.deepEqual(latest.focus.states,
+  ['_NET_WM_STATE_FULLSCREEN','_NET_WM_STATE_MAXIMIZED_VERT','_NET_WM_STATE_MAXIMIZED_HORZ'],
+  'window states use the _NET_WM_STATE names stored rules match on');
+workspace.activeWindow = undefined;
+report();
+assert.equal(latest.focus.valid, false, 'nothing focused is reported honestly');
 control.frameGeometry={x:563,y:2880,width:96,height:720};control.keepAbove=true;report();
 assert.equal(latest.panel[0].x,563,'a displaced rail is reported as it really is');
 const gameEntry = () => latest.windows.find((w) => w.app === 'steam_app_3471800');

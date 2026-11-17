@@ -64,9 +64,11 @@
         w.captionChanged.connect(publish);
         w.minimizedChanged.connect(publish);
         // Per-app rules can match a window state (fullscreen), so a state change
-        // has to reach the feed without waiting for an activation.
-        w.fullScreenChanged.connect(publish);
-        w.keepAboveChanged.connect(publish);
+        // has to reach the feed without waiting for an activation. Guarded: a KWin
+        // release without one of these signals must not take the whole feed down.
+        ['fullScreenChanged', 'keepAboveChanged'].forEach(function (name) {
+            if (w[name] && w[name].connect) w[name].connect(publish);
+        });
         w.outputChanged.connect(publish);
         publish();
     }
