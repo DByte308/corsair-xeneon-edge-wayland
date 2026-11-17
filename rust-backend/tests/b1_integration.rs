@@ -411,6 +411,50 @@ fn b1_closed_connections_release_their_sockets() {
     );
 }
 
+/// The screen cache must be warm for a client that connects immediately, because
+/// the UI connects milliseconds after `ready` and its first `state.all` races the
+/// (slow) panel read. Either the read already happened, or a `screen` event
+/// arrives shortly after — both leave the client with a usable picture page. With
+/// neither, `page-picture.js` renders the brightness slider disabled and nothing
+/// in the UI ever calls `screen.state`, so the control stays dead.
+///
+/// Live half: needs a connected, accessible Edge (the HID read is real).
+#[test]
+fn b1_live_screen_cache_is_warm_for_an_early_client() {
+    if std::env::var("EDGELINE_INTEGRATION_LIVE").as_deref() != Ok("1") {
+        eprintln!("skipping b1_live_screen_cache_is_warm_for_an_early_client (set EDGELINE_INTEGRATION_LIVE=1)");
+        return;
+    }
+    let har = Harness::start("screen_warm").expect("spawn edgeline-backend");
+    har.wait_ready();
+    // Connect at t≈0, the way the host does.
+    let mut client = Client::connect(&har.socket()).expect("connect to backend socket");
+
+    let all = client.call("state.all", json!({})).unwrap();
+    if all["result"]["screen"]["available"].as_bool().unwrap_or(false) {
+        return;
+    }
+    // Cold on the first answer is allowed: the seed read is still running. What
+    // must not happen is that nobody ever tells us.
+    client.set_read_timeout(Duration::from_secs(5)).unwrap();
+    let mut warmed = false;
+    while let Ok(event) = client.next_event() {
+        if event["event"] == "screen" {
+            assert!(
+                event["data"]["available"].as_bool().unwrap_or(false),
+                "the screen event must carry the read values, got {event}"
+            );
+            warmed = true;
+            break;
+        }
+    }
+    assert!(
+        warmed,
+        "a client connected at startup must be told the screen cache is warm; \
+         got neither a warm state.all nor a screen event"
+    );
+}
+
 /// Live half, gated behind EDGELINE_INTEGRATION_LIVE=1. Requires a connected,
 /// unambiguous 2560×720 Edge and the current user's KDE session bus.
 #[test]

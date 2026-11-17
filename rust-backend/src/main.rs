@@ -1347,10 +1347,24 @@ async fn main() -> Result<()> {
             if last.present && last.accessible {
                 let seed = backend.clone();
                 let presence = last.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    refresh_after_hotplug(&seed, &presence)
-                })
-                .await;
+                match tokio::task::spawn_blocking(move || refresh_after_hotplug(&seed, &presence))
+                    .await
+                {
+                    Ok(snapshot) => {
+                        // Tell everyone, not just the cache. The UI connects
+                        // within milliseconds of the `ready` line and its first
+                        // `state.all` then races this ~1 s read, so without these
+                        // two events that client sits with a cold screen cache —
+                        // and a disabled brightness slider — until something else
+                        // warms it. The broadcast is what repairs that client.
+                        backend.broadcast(
+                            "device",
+                            state::device_snapshot(&last.device_info()),
+                        );
+                        backend.broadcast("screen", snapshot);
+                    }
+                    Err(error) => eprintln!("screen seed failed: {error}"),
+                }
             }
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
