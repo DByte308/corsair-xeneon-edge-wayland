@@ -225,6 +225,13 @@ pub fn probe_in(base: &Path) -> Presence {
 }
 
 /// The sysfs device instance behind a hidraw node, e.g. `0003:1B1C:1D0D.0002`.
+///
+/// Degrades deliberately: if the class entry is not a symlink (bind mount,
+/// container) or vanishes between the scan and this read, the instance is empty
+/// and the comparator falls back to path/product/serial — the pre-`instance`
+/// behaviour, still backed by the `dead`-flag recovery. The match is
+/// case-sensitive on purpose; do not reuse this string for VID/PID matching,
+/// which lowercases (see `find_device`).
 fn device_instance(base: &Path, path: &Path) -> String {
     let node = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let Ok(target) = fs::read_link(base.join(node)) else {
@@ -321,13 +328,9 @@ impl Hid {
         Ok(())
     }
 
-    fn read_reply(&mut self) -> std::result::Result<Vec<u8>, ReplyError> {
-        self.read_reply_within(REPLY_TIMEOUT)
-    }
-
-    /// [`read_reply`] with an explicit deadline, so the timeout path is testable
-    /// without spending the real 1.5 s.
-    fn read_reply_within(&mut self, timeout: Duration) -> std::result::Result<Vec<u8>, ReplyError> {
+    /// Poll for a reply for at most `timeout`, classifying the outcome so the
+    /// caller can tell a slow panel from a departed one.
+    fn read_reply(&mut self, timeout: Duration) -> std::result::Result<Vec<u8>, ReplyError> {
         let deadline = Instant::now() + timeout;
         let mut buf = [0u8; hardware::REPORT_SIZE];
         loop {
@@ -407,6 +410,18 @@ impl Device {
     ///   refused before touching the device and logged as such.
     /// - The exchange is always appended to the hid log.
     pub fn exchange(&self, frame: &Frame, confirmation: Option<&Confirmation>) -> Exchange {
+        self.exchange_within(frame, confirmation, REPLY_TIMEOUT)
+    }
+
+    /// [`exchange`] with an explicit reply deadline, so a test can drive the
+    /// "silent panel" path through the real classification without spending the
+    /// configured 1.5 s.
+    fn exchange_within(
+        &self,
+        frame: &Frame,
+        confirmation: Option<&Confirmation>,
+        timeout: Duration,
+    ) -> Exchange {
         let tx = frame.bytes().to_vec();
         let reason = confirmation
             .map(Confirmation::reason)
@@ -437,16 +452,23 @@ impl Device {
         if let Err(e) = hid.write_frame(frame) {
             let msg = format!("write failed: {e}");
             append_log(&format!("TX-FAIL {msg}"));
-            // A write error on a hidraw node means the device is gone (ENODEV),
-            // never a transient fault worth retrying on the same fd.
-            self.mark_dead();
+            // A write error on a hidraw node means the device is gone (ENODEV).
+            // WouldBlock is the exception: on an O_NONBLOCK fd it means the
+            // panel's output queue is momentarily full, which is not a reason to
+            // discard a working channel.
+            if e.downcast_ref::<std::io::Error>()
+                .map(|io| io.kind() != std::io::ErrorKind::WouldBlock)
+                .unwrap_or(true)
+            {
+                self.mark_dead();
+            }
             return Exchange {
                 tx,
                 error: msg,
                 ..Default::default()
             };
         }
-        let rx = match hid.read_reply() {
+        let rx = match hid.read_reply(timeout) {
             Ok(r) => r,
             Err(ReplyError::TimedOut) => {
                 // A silent panel is not a departed one: keep the channel.
@@ -672,41 +694,42 @@ mod tests {
     }
 
     /// A panel that is merely slow must not be treated as a departed one, or a
-    /// busy moment would discard a working channel. The classification lives in
-    /// `read_reply`, which is driven directly here with a short deadline — a
-    /// FIFO with no writer reads as WouldBlock forever, which is exactly a silent
-    /// panel. (`exchange` sends a frame before reading, and a frame written to a
-    /// FIFO we also read from would come straight back, so it cannot express
-    /// this case.)
+    /// busy moment would discard a working channel. Driven through `exchange`,
+    /// so this exercises the real policy (write, classify, mark) rather than the
+    /// classifier alone: a socketpair whose peer never reads accepts the frame
+    /// and then reads as WouldBlock until the deadline, exactly like a panel that
+    /// has not answered yet.
     #[test]
     fn a_silent_channel_times_out_without_marking_the_device_dead() {
-        let dir = fixture_root("fifo");
-        let fifo = dir.join("fifo");
-        let status = std::process::Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
-        assert!(status.success());
-        // O_NONBLOCK matters: a blocking read on an empty FIFO waits forever
-        // instead of reaching the deadline, which is what the real channel does
-        // (Hid::open sets the same flag).
-        let device = device_on(
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .custom_flags(libc::O_NONBLOCK)
-                .open(&fifo)
-                .unwrap(),
-            &fifo,
+        let (ours, _peer) = socket_pair();
+        let device = device_on(ours, Path::new("socketpair"));
+        let ex = device.exchange_within(
+            &hardware::screen_params_query(),
+            None,
+            Duration::from_millis(30),
         );
-        let result = device
-            .hid
-            .lock()
-            .unwrap()
-            .read_reply_within(Duration::from_millis(30));
+        assert!(!ex.ok, "a silent peer cannot produce a reply");
         assert!(
-            matches!(result, Err(ReplyError::TimedOut)),
-            "a quiet channel must classify as a timeout, not as gone"
+            ex.error.contains("timed out"),
+            "the timeout must be reported as one, got {:?}",
+            ex.error
         );
+        // Real now: `exchange` is what sets the flag, and it must not set it here.
         assert!(!device.is_dead(), "a timeout must keep the channel");
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A non-blocking socket and its still-open peer. The peer is returned so the
+    /// caller keeps it alive: dropping it would close our end too.
+    fn socket_pair() -> (File, File) {
+        let mut fds = [0i32; 2];
+        let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "socketpair failed");
+        // O_NONBLOCK on our end, as `Hid::open` sets on the real channel.
+        unsafe { libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK) };
+        unsafe {
+            use std::os::fd::FromRawFd;
+            (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1]))
+        }
     }
 
     fn device_on(file: File, path: &std::path::Path) -> Device {

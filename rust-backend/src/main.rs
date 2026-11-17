@@ -158,10 +158,6 @@ fn color_snapshot() -> Value {
     }
 }
 impl Backend {
-    /// Facts about the Edge Bragi device (device.state). Returns the cached
-    /// device if it was opened, else attempts a best-effort open (a safe read)
-    /// so `state.all`/`device.state` report real presence during cutover; falls
-    /// back to a "not present" placeholder only when the device is genuinely
     /// The cached HID channel, with a channel that failed hard cleared first.
     ///
     /// The hotplug watcher invalidates the cache when it *sees* the device
@@ -179,9 +175,12 @@ impl Backend {
         guard
     }
 
-    /// unavailable, so the UI still renders rather than erroring. When nothing is
-    /// attached every field is empty, as the C++ `EdgeDevice::State` defaults
-    /// are: naming `/dev/hidraw1` here claimed a node that need not exist.
+    /// Facts about the Edge Bragi device (device.state). Returns the cached
+    /// device if it was opened, else attempts a best-effort open (a safe read)
+    /// so `state.all`/`device.state` report real presence during cutover. When
+    /// nothing is attached every field is empty, as the C++ `EdgeDevice::State`
+    /// defaults are: naming `/dev/hidraw1` here claimed a node that need not
+    /// exist, and the UI renders an empty path as "—".
     fn device_info(&self) -> state::DeviceInfo {
         let mut guard = self.hid_guard();
         if guard.is_none() {
@@ -1145,17 +1144,25 @@ fn refresh_after_hotplug(backend: &Arc<Backend>, presence: &hid::Presence) -> Va
     // closing it entirely needs one mutex around every exchange, which belongs
     // with the hardware-ownership work.
     {
-        let guard = backend.hid.lock().unwrap_or_else(|p| p.into_inner());
+        let guard = backend.hid_guard();
         if let Some(existing) = guard.as_ref() {
-            return screen_json(Some(existing));
+            // Only prefer it if it is warm. A channel another arm opened but never
+            // read would make this event say "screen parameters have not been
+            // read", and the UI disables the brightness slider on exactly that —
+            // so adopting our freshly read values is the better answer.
+            if existing.screen_params().is_some() {
+                return screen_json(Some(existing));
+            }
         }
     }
     let _ = device.read_screen_params();
     let snapshot = screen_json(Some(&device));
-    let mut guard = backend.hid.lock().unwrap_or_else(|p| p.into_inner());
+    let mut guard = backend.hid_guard();
     match guard.as_ref() {
-        Some(existing) => screen_json(Some(existing)),
-        None => {
+        Some(existing) if existing.screen_params().is_some() => screen_json(Some(existing)),
+        _ => {
+            // No exchange can be in flight here: every exchange holds this same
+            // mutex for its whole duration, so replacing the entry is safe.
             *guard = Some(device);
             snapshot
         }
@@ -1329,6 +1336,22 @@ async fn main() -> Result<()> {
             let mut last = tokio::task::spawn_blocking(hid::probe)
                 .await
                 .unwrap_or_else(|_| hid::Presence::absent());
+            // Read the panel's values once at startup, as the C++ agent does on
+            // every `device.stateChanged` ("the HID parameters are read once per
+            // appearance"). The broadcast has no listener yet and is a no-op; the
+            // point is the cache. Without it a fresh backend reports
+            // "screen parameters have not been read", the picture page disables
+            // the brightness slider on that, and nothing in the UI asks
+            // `screen.state`, so the control stayed dead until a hotplug or a
+            // profile apply warmed the cache.
+            if last.present && last.accessible {
+                let seed = backend.clone();
+                let presence = last.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    refresh_after_hotplug(&seed, &presence)
+                })
+                .await;
+            }
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 let now = match tokio::task::spawn_blocking(hid::probe).await {
