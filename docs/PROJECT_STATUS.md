@@ -45,6 +45,15 @@ deployed host (retire Electron), (3) cutover gate = a visible acceptance run,
 - `cargo test --locked` (rust-backend): **147 passed + 3 (edgeline-reserve)**; 0
   warnings; release build clean.
 - Flaky disk-usage sensor test de-flaked (pure `disk_usage_from` + tolerance).
+  Sensor `temp_dir()` hardened with a monotonic counter (parallel-test
+  shared-state race removed).
+- **B1 done**: `rust-backend/tests/b1_integration.rs` replaces
+  `ui/test/rust-backend.integration.js`. Spawns the real `edgeline-backend` on a
+  private socket and asserts the read-only contract (Rust `backend.info`, ten
+  concurrent requests, artwork null-or-JPEG-data-URL, rejects invalid UUIDs and
+  unsupported methods). Live half gated behind `EDGELINE_INTEGRATION_LIVE=1`
+  reads the real KWin window snapshot and asserts an untrusted DBus `Update` is
+  denied. Live-parallel verified green x6.
 - UI: 19 suites pass. Tauri host: 2 pass. C++ agent: 14 pass.
 - Live RPC probe against real panel + session bus: screen.state (bright 50),
   media.snapshot (Vivaldi playing), updates.settings, profiles.list,
@@ -53,11 +62,17 @@ deployed host (retire Electron), (3) cutover gate = a visible acceptance run,
 ### Remaining (not done)
 
 Downstream Phase B–D from the plan, each gated by the cutover decision:
-- **B1** Rust-side integration test to replace `ui/test/rust-backend.integration.js`.
+- **B1 done** (committed d58ddbe + 909f1a2 + fixup).
 - **B2** Enable Tauri `bundle.active=true` + native packaging (deb/AppImage).
+  MUST NOT disturb the legacy rollback route (EDGELINE_BACKEND unset counts as
+  the Electron path) until gate C.
+- **B** Cutover blockers (must land before B3/B4):
+  - \`state.all\` / \`device.state\` / \`system.info\` served by the Rust backend.
+  - event-broadcast channel (per-connection writer registry) so the Rust backend
+    can push the events the dashboard relies on.
 - **B3** Make Tauri the default build / entry.
-- **B4** Remove the Electron `ui/` host + `window-bridge.py` + legacy runtime
-  split — **only after the visible acceptance gate (C) passes**.
+- **B4** Remove the Electron \`ui/\` host + \`window-bridge.py\` + legacy runtime
+  split — only after the visible acceptance gate (C) passes.
 - **C** Visible acceptance run on the real Edge (physical touch, app switching,
   tray, hotplug, Tablet Deck, dashboard tiles) — operator-hosted.
 - **D** Enable gestures behind the strict opt-in flag, validated on the real
