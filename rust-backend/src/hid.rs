@@ -215,7 +215,6 @@ impl Hid {
 /// last settled screen parameters so `state` is cheap and truthful.
 pub struct Device {
     hid: Mutex<Hid>,
-    path: PathBuf,
     screen: Mutex<Option<ScreenParams>>,
     error: Mutex<Option<String>>,
 }
@@ -226,14 +225,9 @@ impl Device {
         let hid = Hid::open(&path)?;
         Ok(Device {
             hid: Mutex::new(hid),
-            path,
             screen: Mutex::new(None),
             error: Mutex::new(None),
         })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// Perform a gated exchange against the panel.
@@ -366,7 +360,6 @@ mod tests {
                 file: File::open("/dev/null").unwrap(),
                 path: PathBuf::from("/dev/null"),
             }),
-            path: PathBuf::from("/dev/null"),
             screen: Mutex::new(None),
             error: Mutex::new(None),
         };
@@ -383,7 +376,6 @@ mod tests {
                 file: File::open("/dev/null").unwrap(),
                 path: PathBuf::from("/dev/null"),
             }),
-            path: PathBuf::from("/dev/null"),
             screen: Mutex::new(None),
             error: Mutex::new(None),
         };

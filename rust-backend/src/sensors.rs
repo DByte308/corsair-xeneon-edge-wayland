@@ -650,6 +650,12 @@ pub fn read_disk_usage(root: &Path) -> f64 {
     if unsafe { libc::statvfs(cpath.as_ptr(), &mut vfs) } != 0 || vfs.f_blocks == 0 {
         return -1.0;
     }
+    disk_usage_from(vfs)
+}
+
+/// Compute used-percent from a [`libc::statvfs`]. Pure and deterministic, so
+/// tests can assert an exact result without depending on a live filesystem.
+pub fn disk_usage_from(vfs: libc::statvfs) -> f64 {
     let total = vfs.f_blocks as f64;
     // f_bavail rather than f_bfree: the blocks reserved for root are not space
     // this user can fill, so counting them as free overstates what is left.
@@ -1697,16 +1703,28 @@ mod tests {
         );
         assert!(parse_failed_units("").is_empty());
 
-        // disk usage must agree with the filesystem the kernel reports for the
-        // same path.
+        // Pure, deterministic: the percentage is a straight function of the
+        // block counts, so this must be exact and never flaky.
+        let mut vfs: libc::statvfs = unsafe { std::mem::zeroed() };
+        vfs.f_blocks = 1000;
+        vfs.f_bavail = 750;
+        assert_eq!(disk_usage_from(vfs), 25.0);
+        vfs.f_bavail = 0;
+        assert_eq!(disk_usage_from(vfs), 100.0);
+        vfs.f_bavail = 1000;
+        assert_eq!(disk_usage_from(vfs), 0.0);
+
+        // A live smoke check: read_disk_usage and a fresh statvfs may drift a
+        // little on a busy filesystem, so only assert they agree within a
+        // small relative tolerance instead of to 1e-9 (which was flaky).
         let dir = temp_dir();
         let got = read_disk_usage(&dir);
         let cpath = CString::new(dir.to_str().unwrap()).unwrap();
         let mut vfs = unsafe { std::mem::zeroed::<libc::statvfs>() };
         let rc = unsafe { libc::statvfs(cpath.as_ptr(), &mut vfs) };
         assert_eq!(rc, 0);
-        let expected = 100.0 * (vfs.f_blocks as f64 - vfs.f_bavail as f64) / vfs.f_blocks as f64;
-        assert!(near(got, expected, 1e-9));
+        let expected = disk_usage_from(vfs);
+        assert!(near(got, expected, 1e-6), "got {got}, expected {expected}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -157,20 +157,7 @@ impl Backend {
                 "hardware":"legacy C++ agent (not migrated)","gestures":"disabled by default; state machine ported (flag-gated)",
                 "capabilities":["kwin-window-feed","edge-window-activation","window-fitting","native-window-picker","steam-launch","local-artwork"]}),
             ),
-            "backend.stop" => Ok(json!({"stopping":true})),
-            "screen.hid" => {
-                // Read-only probe for the A0 HID driver. Opens the panel and
-                // reads its current screen parameters; never writes.
-                let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
-                if guard.is_none() {
-                    *guard = Some(hid::Device::open().context("no accessible Edge Bragi HID device")?);
-                }
-                let device = guard.as_ref().context("hid device unavailable")?;
-                let params = device.read_screen_params()?;
-                Ok(json!({ "available": true, "path": device.path().display().to_string(),
-                    "brightness": params.brightness, "backlight": params.backlight,
-                    "contrast": params.contrast, "red": params.red, "green": params.green, "blue": params.blue }))
-            }
+            "backend.stop" => Ok(json!({ "stopping": true })),
             "screen.state" => {
                 // Mirror Api::screenSnapshot(): surfaced by A1 per hid.rs. The
                 // HID channel caches the last settled parameters; `refresh`
