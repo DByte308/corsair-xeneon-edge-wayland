@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pub mod hardware;
 mod ddc;
+mod focus;
 mod gestures;
 mod hid;
 mod kwin;
@@ -56,10 +57,23 @@ struct Backend {
     /// new interval or a disable takes effect immediately instead of after the
     /// current sleep expires.
     streaming_wake: Notify,
+    /// Profile a rule last applied, and the one that was active before it.
+    rule_state: std::sync::Mutex<RuleBookkeeping>,
+    /// The last focus report, mirrored out of the feed's async path so the
+    /// synchronous snapshot builders can read it.
+    focused_mirror: std::sync::Mutex<Option<focus::Focused>>,
     /// External tools `system.info` reports, resolved once at startup: where
     /// they are on `PATH` and what they say their version is. Hardcoded FHS
     /// paths misreport any non-FHS distribution.
     tools: tools::Tools,
+}
+
+/// What a rule last did, so `restoreOnUnfocus` can undo it. Mirrors the C++
+/// `m_ruleAppliedProfile` / `m_profileBeforeRule` pair.
+#[derive(Default)]
+struct RuleBookkeeping {
+    applied: String,
+    before: String,
 }
 
 fn uid() -> u32 {
@@ -270,14 +284,84 @@ impl Backend {
             .send(json!({ "event": event, "data": data }));
     }
 
-    /// rules.json as the UI sees it. The Rust backend has no X11 focus watcher,
-    /// so rules cannot be armed the way the C++ agent arms them.
+    /// rules.json as the UI sees it, plus what the focus feed knows.
+    ///
+    /// `watching` is true only once KWin has actually reported an active window:
+    /// rules that cannot arm must not look armed.
     fn rules_snapshot(&self) -> Value {
         let cfg = profiles::rules_from_json(&self.rules.load());
         let mut snapshot = profiles::rules_to_json(&cfg);
-        snapshot["watching"] = json!(false);
+        snapshot["watching"] = json!(self.kwin.focus_watching());
         snapshot["path"] = json!(self.rules.path().display().to_string());
+        let focused = self
+            .focused_mirror
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .unwrap_or_default();
+        snapshot["focused"] = focused.to_json();
+        let applied = self
+            .rule_state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .applied
+            .clone();
+        if !applied.is_empty() {
+            snapshot["appliedProfile"] = json!(applied);
+        }
         snapshot
+    }
+
+    /// Handle a focus change: announce it, then let the rules act on it. Follows
+    /// `Api::onFocusChanged` step for step.
+    async fn on_focus_change(&self, focused: focus::Focused) {
+        *self.focused_mirror.lock().unwrap_or_else(|p| p.into_inner()) = Some(focused.clone());
+        self.broadcast("focus", focused.to_json());
+
+        let cfg = profiles::rules_from_json(&self.rules.load());
+        if !cfg.enabled {
+            return;
+        }
+        let (applied, before) = {
+            let state = self.rule_state.lock().unwrap_or_else(|p| p.into_inner());
+            (state.applied.clone(), state.before.clone())
+        };
+        let active = self.profiles.active();
+        let profiles = &self.profiles;
+        let plan = focus::plan_rule_application(
+            &cfg,
+            &focused.window_info(),
+            &applied,
+            &before,
+            &active,
+            |name| profiles.exists(name),
+        );
+        if plan.is_none() {
+            return;
+        }
+        // The same path a click takes, so a rule cannot apply a profile
+        // differently from the UI.
+        match self.apply_profile(&plan.target) {
+            Ok(_) => {
+                let mut state = self.rule_state.lock().unwrap_or_else(|p| p.into_inner());
+                if plan.clear_bookkeeping {
+                    state.applied.clear();
+                    state.before.clear();
+                } else {
+                    state.applied = if plan.matched {
+                        plan.target.clone()
+                    } else {
+                        String::new()
+                    };
+                    if let Some(before) = plan.remember_before {
+                        state.before = before;
+                    }
+                }
+                drop(state);
+                self.broadcast("rules", self.rules_snapshot());
+            }
+            Err(error) => eprintln!("rule could not apply '{}': {error}", plan.target),
+        }
     }
 
     /// Broadcast the touch state, mirroring the C++ agent's `stateChanged`
@@ -1248,8 +1332,11 @@ async fn main() -> Result<()> {
     let ddc_worker = ddc.clone();
     tokio::spawn(async move { ddc_worker.run().await; });
     let updates_settings = updates::UpdateChecker::config_dir(&home()?);
+    let (focus_tx, mut focus_rx) = tokio::sync::mpsc::unbounded_channel();
     let backend = Arc::new(Backend {
-        kwin: kwin::Kwin::new(&scripts).await?,
+        kwin: kwin::Kwin::new(&scripts, focus_tx).await?,
+        rule_state: std::sync::Mutex::new(RuleBookkeeping::default()),
+        focused_mirror: std::sync::Mutex::new(None),
         hid: std::sync::Mutex::new(None),
         ddc,
         touch: std::sync::Mutex::new(touch::Touch::new(touch::config::touch_path())),
@@ -1391,6 +1478,24 @@ async fn main() -> Result<()> {
                                 "error": format!("screen refresh failed: {error}")})
                         });
                 backend.broadcast("screen", screen);
+            }
+        });
+    }
+    // Focus feed: the window report already runs inside KWin, so rules arm from
+    // the same trusted channel (and the same deploy path) as the window list.
+    // C++ started its own X11 watcher at startup; on Wayland the compositor is
+    // the only thing that can see the active window, so the feed is started here.
+    {
+        let starter = backend.clone();
+        tokio::spawn(async move {
+            if let Err(error) = starter.kwin.ensure_feed().await {
+                eprintln!("focus feed not available, rules stay unarmed: {error}");
+            }
+        });
+        let backend = backend.clone();
+        tokio::spawn(async move {
+            while let Some(focused) = focus_rx.recv().await {
+                backend.on_focus_change(focused).await;
             }
         });
     }

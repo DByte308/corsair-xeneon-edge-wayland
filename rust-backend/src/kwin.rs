@@ -22,6 +22,48 @@ const ACTIVATION: &str = include_str!("../../ui/kwin-activate-window.js");
 struct Feed {
     snapshot: Arc<RwLock<Snapshot>>,
     owner: Arc<RwLock<String>>,
+    connection: Connection,
+    /// Set on the first report that carries the active window.
+    focus_watching: Arc<std::sync::atomic::AtomicBool>,
+    /// The channel the rules handler listens on. Focus comes from the compositor
+    /// because Wayland has no other place that can see every window (the C++
+    /// agent refused there).
+    focus_events: tokio::sync::mpsc::UnboundedSender<crate::focus::Focused>,
+}
+
+impl Feed {
+    /// Whether the caller is KWin itself.
+    ///
+    /// Resolved from the bus, not only from the cached owner: the cache is filled
+    /// by `ensure_scripts`, and focus reports arrive before anything has called
+    /// it — trusting the cache alone rejected real KWin traffic at startup. A
+    /// mismatch re-resolves once, which also survives a KWin restart (its unique
+    /// name changes, the cache still holds the old one).
+    async fn from_kwin(&self, header: &Header<'_>) -> bool {
+        let Some(sender) = header.sender().map(|s| s.to_string()) else {
+            return false;
+        };
+        if self.owner.read().await.as_str() == sender {
+            return true;
+        }
+        let dbus = match Proxy::new(
+            &self.connection,
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+        )
+        .await
+        {
+            Ok(proxy) => proxy,
+            Err(_) => return false,
+        };
+        let resolved: Result<String, _> = dbus.call("GetNameOwner", &("org.kde.KWin",)).await;
+        let Ok(resolved) = resolved else {
+            return false;
+        };
+        *self.owner.write().await = resolved.clone();
+        resolved == sender
+    }
 }
 
 #[zbus::interface(name = "dev.edgeline.Windows")]
@@ -31,8 +73,7 @@ impl Feed {
         payload: &str,
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<()> {
-        let owner = self.owner.read().await;
-        if header.sender().map(|s| s.as_str()) != Some(owner.as_str()) {
+        if !self.from_kwin(&header).await {
             return Err(zbus::fdo::Error::AccessDenied(
                 "Only KWin may publish windows".into(),
             ));
@@ -40,8 +81,18 @@ impl Feed {
         let snapshot = Snapshot::parse(payload)
             .map_err(|error| zbus::fdo::Error::InvalidArgs(error.to_string()))?;
         *self.snapshot.write().await = snapshot;
+        // The same report carries the active window: focus rides the feed rather
+        // than a second script, so there is one trusted channel and one load path.
+        if let Ok(value) = serde_json::from_str::<Value>(payload) {
+            if let Some(focus) = value.get("focus") {
+                let focused = crate::focus::Focused::from_json(focus);
+                self.focus_watching.store(true, Ordering::Relaxed);
+                let _ = self.focus_events.send(focused);
+            }
+        }
         Ok(())
     }
+
 }
 
 pub struct Kwin {
@@ -55,14 +106,22 @@ pub struct Kwin {
     sequence: AtomicU64,
     gate: Mutex<()>,
     picker: Mutex<()>,
+    /// Whether a focus report has arrived from the feed, i.e. whether rules can
+    /// actually arm. `rules.get` reports this as `watching`.
+    focus_watching: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Kwin {
-    pub async fn new(directory: &Path) -> Result<Self> {
+    /// Build a `Kwin`; focus reports from the KWin script arrive on `focus_events`.
+    pub async fn new(
+        directory: &Path,
+        focus_events: tokio::sync::mpsc::UnboundedSender<crate::focus::Focused>,
+    ) -> Result<Self> {
         let connection = Connection::session().await?;
         let bus_name = format!("dev.edgeline.Windows.rust.p{}", std::process::id());
         let snapshot = Arc::new(RwLock::new(Snapshot::default()));
         let owner = Arc::new(RwLock::new(String::new()));
+        let focus_watching = Arc::new(std::sync::atomic::AtomicBool::new(false));
         connection
             .object_server()
             .at(
@@ -70,11 +129,14 @@ impl Kwin {
                 Feed {
                     snapshot: snapshot.clone(),
                     owner: owner.clone(),
+                    connection: connection.clone(),
+                    focus_watching: focus_watching.clone(),
+                    focus_events,
                 },
             )
             .await?;
         connection.request_name(bus_name.as_str()).await?;
-        Ok(Self {
+        let kwin = Self {
             connection,
             snapshot,
             owner,
@@ -85,7 +147,19 @@ impl Kwin {
             sequence: AtomicU64::new(0),
             gate: Mutex::new(()),
             picker: Mutex::new(()),
-        })
+            focus_watching,
+        };
+        // Scripts a previous process left loaded would keep their bus names (and
+        // KWin would hand back the old script for a reused tag), so clear them
+        // before this process deploys anything.
+        kwin.unload_stale_scripts().await;
+        Ok(kwin)
+    }
+
+
+    /// Whether the feed has reported the active window since startup.
+    pub fn focus_watching(&self) -> bool {
+        self.focus_watching.load(Ordering::Relaxed)
     }
 
     async fn scripting(&self) -> Result<Proxy<'_>> {
@@ -109,12 +183,78 @@ impl Kwin {
         Ok(dbus.call("GetNameOwner", &("org.kde.KWin",)).await?)
     }
 
+    /// Where the tags this backend loaded are recorded, so a later process can
+    /// unload what a crash left behind.
+    fn script_state_path(&self) -> PathBuf {
+        self.directory
+            .parent()
+            .unwrap_or(&self.directory)
+            .join("kwin-scripts.json")
+    }
+
+    fn recorded_tags(&self) -> Vec<String> {
+        std::fs::read_to_string(self.script_state_path())
+            .ok()
+            .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
+            .unwrap_or_default()
+    }
+
+    fn write_recorded_tags(&self, tags: &[String]) {
+        if let Ok(text) = serde_json::to_string(tags) {
+            let _ = std::fs::write(self.script_state_path(), text);
+        }
+    }
+
+    /// Unload scripts a previous process left loaded in KWin.
+    ///
+    /// KWin keys a script by its tag: loading a tag it already knows returns the
+    /// *old* script and never evaluates the new file. A crashed process therefore
+    /// poisons that tag for every later run, which is what silently kept the focus
+    /// watcher from ever running. Tags are unique per process, and this drains the
+    /// leftovers.
+    pub async fn unload_stale_scripts(&self) {
+        let tags = self.recorded_tags();
+        if tags.is_empty() {
+            return;
+        }
+        let Ok(scripting) = self.scripting().await else {
+            return;
+        };
+        for tag in &tags {
+            let loaded: zbus::Result<bool> = scripting.call("isScriptLoaded", &(tag.as_str(),)).await;
+            if matches!(loaded, Ok(true)) {
+                let _: zbus::Result<()> = scripting.call("unloadScript", &(tag.as_str(),)).await;
+            }
+        }
+        self.write_recorded_tags(&[]);
+    }
+
     async fn deploy(&self, tag: &str, source: &str) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let path = self.directory.join(format!("{tag}.js"));
         std::fs::write(&path, source)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         let scripting = self.scripting().await?;
+        // A script left loaded by an earlier process (crash, SIGKILL, or a
+        // timeout in development) keeps the tag, and KWin refuses to load a
+        // second script under a name it already has. Taking the tag over keeps
+        // startup idempotent instead of failing until KWin restarts.
+        let loaded: zbus::Result<bool> = scripting.call("isScriptLoaded", &(tag,)).await;
+        if let Ok(true) = loaded {
+            let _: zbus::Result<()> = scripting.call("unloadScript", &(tag,)).await;
+            // KWin runs scripting calls on its own event loop, so an unload is not
+            // finished when the call returns. Loading straight away gives the
+            // script a new id that the still-pending unload then removes — matched
+            // by tag, so it deletes the script we just loaded and nothing reports.
+            // Wait for the tag to actually be free.
+            for _ in 0..40 {
+                let now: zbus::Result<bool> = scripting.call("isScriptLoaded", &(tag,)).await;
+                if !matches!(now, Ok(true)) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
         let id: i32 = scripting
             .call("loadScript", &(path.to_string_lossy().as_ref(), tag))
             .await?;
@@ -129,8 +269,15 @@ impl Kwin {
             "org.kde.kwin.Script",
         )
         .await?;
+        // KWin registers the script id synchronously but finishes loading it on
+        // its own event loop; a `run` that arrives first goes to an object that
+        // is not ready and the script is silently never evaluated.
+        tokio::time::sleep(Duration::from_millis(150)).await;
         let _: () = script.call("run", &()).await?;
         self.scripts.lock().await.push(tag.to_owned());
+        let mut recorded = self.recorded_tags();
+        recorded.push(tag.to_owned());
+        self.write_recorded_tags(&recorded);
         Ok(())
     }
 

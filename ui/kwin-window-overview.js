@@ -36,13 +36,37 @@
                 width:w.frameGeometry.width, height:w.frameGeometry.height,
                 keepAbove:!!w.keepAbove, minimized:!!w.minimized});
         });
+        // The active window, for per-app rules. It is global, not per-output: a
+        // rule fires on what the user is working in, which may well be on another
+        // screen. State names are the _NET_WM_STATE ones rules.json matches on.
+        var aw = workspace.activeWindow;
+        var focus = {valid: false, wmInstance: '', wmClass: '', states: []};
+        if (aw) {
+            var states = [];
+            if (aw.fullScreen) states.push('_NET_WM_STATE_FULLSCREEN');
+            var mode = Number(aw.maximizeMode);
+            if (mode === 1 || mode === 3) states.push('_NET_WM_STATE_MAXIMIZED_VERT');
+            if (mode === 2 || mode === 3) states.push('_NET_WM_STATE_MAXIMIZED_HORZ');
+            if (aw.keepAbove) states.push('_NET_WM_STATE_ABOVE');
+            if (aw.keepBelow) states.push('_NET_WM_STATE_BELOW');
+            if (aw.skipTaskbar) states.push('_NET_WM_STATE_SKIP_TASKBAR');
+            if (aw.modal) states.push('_NET_WM_STATE_MODAL');
+            if (aw.minimized) states.push('_NET_WM_STATE_HIDDEN');
+            focus = {valid: true, wmInstance: String(aw.resourceName || ''),
+                wmClass: String(aw.resourceClass || ''), states: states};
+        }
         callDBus(__EDGELINE_BUS__, '/Windows', 'dev.edgeline.Windows', 'Update',
-            JSON.stringify({available:outputs.length === 1, windows:windows, screens:screens, panel:panel}));
+            JSON.stringify({available:outputs.length === 1, windows:windows, screens:screens,
+                panel:panel, focus:focus}));
     }
     function track(w) {
         w.frameGeometryChanged.connect(publish);
         w.captionChanged.connect(publish);
         w.minimizedChanged.connect(publish);
+        // Per-app rules can match a window state (fullscreen), so a state change
+        // has to reach the feed without waiting for an activation.
+        w.fullScreenChanged.connect(publish);
+        w.keepAboveChanged.connect(publish);
         w.outputChanged.connect(publish);
         publish();
     }

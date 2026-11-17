@@ -77,10 +77,10 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
     connection, and `{event,data}` lines on the same sockets. Emitted today:
     `sensors` (streamed at the client's interval), `screen`, `touch`,
     `touchConfig`, `profiles` (`{active}`/`{changed}`), `rules`, `update`,
-    `ddc`, `ddcLog`, `device` (hotplug) and the `screen` that follows it. Still
-    missing, each needing a watcher the Rust backend does not have: `focus`
-    (rules arming) and `touch.point`/`gesture` (XInput2 stream). `ui.action` is
-    now emitted for the
+    `ddc`, `ddcLog`, `device` (hotplug) and the `screen` that follows it, plus
+    `focus` and `rules` when a per-app rule acts. Still missing: `touch.point` and
+    `gesture`, which need the XInput2 touch stream. `ui.action` is now emitted for
+    the
     dashboard vocabulary (`dashboard-toggle`, `dashboard-page-next`): those live
     in the UI process, so `launchpad.action` relays them instead of failing as an
     unknown KWin shortcut, matching `Api::runGestureAction`. The remaining
@@ -146,10 +146,8 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   one fd because the event forwarder stayed parked owning the write half
   (`b1_sensors_stream_broadcasts_merged_snapshots`,
   `b1_closed_connections_release_their_sockets`).
-- **No event-broadcast channel for `focus`, `touch.point`/`gesture`.** Those two
-  need machinery the Rust backend does not have yet: the X11 focus watcher (so
-  `rules.get` still reports `watching:false`), and the XInput2 touch stream (the
-  `touch.stream` arm turns on nothing). `device` **is** emitted now: a 2 s probe
+- **No event-broadcast channel for `touch.point`/`gesture`.** It needs the XInput2
+  touch stream; the `touch.stream` arm turns on nothing. `device` **is** emitted now: a 2 s probe
   of the hidraw node (the C++ `EdgeDevice` polling interval) compares presence,
   path, product, serial and accessibility, and on a change broadcasts `device`
   plus the refreshed `screen`, re-reading the panel's values when it came back —
@@ -169,9 +167,21 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   process that owns the dashboard, as `Api::runGestureAction` does, instead of
   failing as an unknown KWin shortcut; the window vocabulary is validated up
   front so a typo cannot load the KWin controller either. Dashboard tiles that
-  follow sensors, DDC, profiles and rules update live, and a device appearing or
-  disappearing now redraws the device pane; anything driven by `focus` or the
-  touch stream does not.
+  follow sensors, DDC, profiles and rules update live, a device appearing or
+  disappearing redraws the device pane, and per-app rules arm and fire; anything
+  driven by the touch stream does not.
+- **Per-app rules arm on Wayland, which the C++ agent could not do.** Its
+  `FocusWatcher` refused there ("per-window rules need a native Wayland backend;
+  XWayland cannot observe all windows"), so rules never armed on a Wayland
+  session. Here the active window comes from the KWin window feed the backend
+  already runs — the same trusted channel, gated on KWin being the sender — and
+  carries `_NET_WM_STATE_*` names so stored rules keep matching. `rules.get`
+  reports `watching` truthfully (true only once a report has arrived) plus the
+  focused window and the profile a rule applied; `restoreOnUnfocus`, the fallback
+  profile and "never churn an already-active profile" follow `Api::onFocusChanged`
+  step for step, and a rule applies profiles through the same path a click takes.
+  Gate-C item: a rule that fires *moves the panel*, so the acceptance run should
+  include one real rule and its restore.
 - Rust backend still reports `hardware: "legacy C++ agent (not migrated)"` in
   `backend.info` — the C++ agent is still the running hardware owner for the
   Electron host; the Rust backend is invoked alongside it during dev. The
