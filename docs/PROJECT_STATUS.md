@@ -85,9 +85,9 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
     unknown KWin shortcut, matching `Api::runGestureAction`. The remaining
     gesture actions that C++ performs itself (`brightness-up`/`-down`,
     `blank-toggle`, `profile-next`/`-previous`) belong to the gesture bridge and
-    stay unimplemented with gestures disabled. The `sensors` event carries the merged media fields: `state.all` and
-    the event share `with_media`, so the dashboard's now-playing tile and
-    notification badge survive each tick.
+    stay unimplemented with gestures disabled. The `sensors` event carries the
+    merged media fields: `state.all` and the event share `with_media`, so the
+    dashboard's now-playing tile and notification badge survive each tick.
 - **B3** Make Tauri the default build / entry.
 - **B4** Remove the Electron \`ui/\` host + \`window-bridge.py\` + legacy runtime
   split — only after the visible acceptance gate (C) passes.

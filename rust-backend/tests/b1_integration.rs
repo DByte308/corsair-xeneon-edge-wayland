@@ -47,6 +47,11 @@ struct Client {
     /// call would both swallow buffered bytes and return an event where a reply
     /// was expected.
     reader: BufReader<UnixStream>,
+    /// Events skipped while waiting for a reply, handed out by `next_event`
+    /// first. Whether a broadcast lands before or after its own reply is not
+    /// guaranteed: an arm that awaits between the two can flip the order, and a
+    /// client that dropped these would then miss an event it asked about.
+    pending_events: Vec<Value>,
     next_id: u64,
 }
 
@@ -58,6 +63,7 @@ impl Client {
         Ok(Client {
             stream,
             reader,
+            pending_events: Vec::new(),
             next_id: 1,
         })
     }
@@ -71,17 +77,22 @@ impl Client {
         self.stream.write_all(&line)?;
 
         // An event that lands between the request and the reply is not the
-        // reply; keep reading until the line is not an event.
+        // reply; keep reading until the line is not an event, but keep what was
+        // skipped so a later `next_event` can still see it.
         loop {
             let value = self.read_line()?;
             if value.get("event").is_none() {
                 return Ok(value);
             }
+            self.pending_events.push(value);
         }
     }
 
     /// Read the next unsolicited event, discarding any replies in between.
     fn next_event(&mut self) -> std::io::Result<Value> {
+        if !self.pending_events.is_empty() {
+            return Ok(self.pending_events.remove(0));
+        }
         loop {
             let value = self.read_line()?;
             if value.get("event").is_some() {
