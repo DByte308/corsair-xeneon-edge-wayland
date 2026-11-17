@@ -22,10 +22,21 @@ use std::{
     },
     path::PathBuf,
     process::{Child, Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
 use serde_json::{Value, json};
+
+/// Unique directory per spawned harness, so parallel tests never share a socket.
+/// The backend also refuses to bind a socket that is already owned, so a shared
+/// path would make the second backend exit and swallow the first's socket.
+static HARNESS_DIR_N: AtomicU64 = AtomicU64::new(0);
+
+fn unique_dir(name: &str) -> PathBuf {
+    let n = HARNESS_DIR_N.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("edgeline-b1-{}-{n}", name))
+}
 
 /// A tiny JSON-newline RPC client over a Unix socket, same wire format as the
 /// C++ agent and the Rust backend's `serve`.
@@ -63,8 +74,8 @@ struct Harness {
 
 impl Harness {
     /// Spawn the real backend binary on a freshly created private socket.
-    fn start() -> std::io::Result<Harness> {
-        let dir = std::env::temp_dir().join(format!("edgeline-b1-{}", std::process::id()));
+    fn start(name: &str) -> std::io::Result<Harness> {
+        let dir = unique_dir(name);
         std::fs::create_dir_all(&dir)?;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
         let socket = dir.join("backend.sock");
@@ -80,6 +91,25 @@ impl Harness {
 
     fn socket(&self) -> PathBuf {
         self.dir.join("backend.sock")
+    }
+
+    /// The spawned backend process id, used to derive its DBus bus name
+    /// (dev.edgeline.Windows.rust.p{backend_pid}).
+    fn backend_pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Remove the backend's own `scripts-{pid}` runtime dir (belt-and-suspenders
+    /// in case the graceful SIGTERM did not run its cleanup). Only touches the
+    /// dir for this exact backend pid, never another live backend's.
+    fn cleanup_runtime_dir(&self) {
+        let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") else {
+            return;
+        };
+        let dir = PathBuf::from(runtime)
+            .join("edgeline-rust")
+            .join(format!("scripts-{}", self.backend_pid()));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Wait until the socket accepts a connection (the backend prints a ready
@@ -98,15 +128,30 @@ impl Harness {
 
 impl Drop for Harness {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Graceful shutdown so the backend cleans up its own runtime dir on the
+        // SIGTERM path (main.rs removes the socket and its `scripts-*` tree on
+        // SIGTERM/ctrl-c). SIGKILL without a timeout would orphan them.
+        let pid = self.child.id() as i32;
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        // Bound the graceful wait; if it is hung, escalate to SIGKILL.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && self.child.try_wait().ok().flatten().is_none() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        self.cleanup_runtime_dir();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
 #[test]
 fn b1_read_only_rpc_contract() {
-    let har = Harness::start().expect("spawn edgeline-backend");
+    let har = Harness::start("read_only").expect("spawn edgeline-backend");
     har.wait_ready();
     let mut client = Client::connect(&har.socket()).expect("connect to backend socket");
 
@@ -159,7 +204,7 @@ fn b1_live_kwin_window_feed() {
         eprintln!("skipping b1_live_kwin_window_feed (set EDGELINE_INTEGRATION_LIVE=1)");
         return;
     }
-    let har = Harness::start().expect("spawn edgeline-backend");
+    let har = Harness::start("live").expect("spawn edgeline-backend");
     har.wait_ready();
     let mut client = Client::connect(&har.socket()).expect("connect to backend socket");
 
@@ -187,5 +232,29 @@ fn b1_live_kwin_window_feed() {
     for c in clients.iter_mut() {
         let r = c.call("backend.info", json!({})).unwrap();
         assert_eq!(r["result"]["language"], "Rust");
+    }
+
+    // Only KWin may supply window reports. An untrusted DBus caller must be
+    // rejected by the backend's sender check (kwin.rs header.sender() vs the
+    // registered KWin owner). The bus name the backend owns is
+    // dev.edgeline.Windows.rust.p{pid}; send a foreign Update and require a
+    // refusal. Mirrors busctl --user call dev.edgeline.Windows.rust.p{pid}
+    //   /Windows dev.edgeline.Windows Update s '<payload>'
+    let bus_name = format!("dev.edgeline.Windows.rust.p{}", har.backend_pid());
+    let payload = r#"{"available":false,"windows":[]}"#;
+    let out = std::process::Command::new("busctl")
+        .args(["--user", "call", &bus_name, "/Windows", "dev.edgeline.Windows", "Update", "s", payload])
+        .output();
+    if let Ok(output) = out {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let denied = stderr.contains("Only KWin") || stderr.contains("Access denied") || stderr.contains("AccessDenied");
+        assert!(
+            denied,
+            "foreign window report must be denied, got stderr: {stderr}"
+        );
+    } else {
+        // busctl may be absent; the backend is still the authority. Skip the
+        // assertion rather than fail the suite on a missing tool.
+        eprintln!("skipping untrusted-DBus denial (busctl unavailable)");
     }
 }
