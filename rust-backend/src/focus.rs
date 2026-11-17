@@ -143,12 +143,22 @@ pub fn plan_rule_application(
         plan.remember_before = Some(active.to_string());
     }
     plan.matched = found.matched;
-    // Already there, or a profile that is not on disk: nothing to do. Checked
-    // before the target is reported so a stale rule cannot look like a success.
+    // Already there, or a profile that is not on disk: nothing to apply, but a
+    // pending restore still has to forget its bookkeeping — C++ clears it *before*
+    // this check. Keeping it would leave `rules.get` reporting a stale
+    // `appliedProfile` and let a later focus change restore a profile the user has
+    // since replaced by hand.
     if target == active || !exists(&target) {
-        return RulePlan::default();
+        return RulePlan {
+            clear_bookkeeping: plan.clear_bookkeeping,
+            ..RulePlan::default()
+        };
     }
     plan.target = target;
+    // Note one deliberate divergence: when a *match* targets the already-active
+    // profile, C++ records `before = active` and then returns, leaving half a
+    // restore armed. Dropping it here (the early return above) is safer — do not
+    // "fix" this back to the reference.
     plan
 }
 
@@ -241,6 +251,28 @@ mod tests {
             always,
         );
         assert!(plan.is_none());
+    }
+
+    /// A restore whose target is already active still has to clear the
+    /// bookkeeping, or a stale `appliedProfile` outlives the restore and a later
+    /// focus change re-applies a profile the user has moved on from.
+    #[test]
+    fn a_restore_that_needs_no_apply_still_clears_the_bookkeeping() {
+        let cfg = rules(true, true, "", Some(rule("blender.Blender", "Painting")));
+        // Nothing matches now; the restore target ("Reading") is already active.
+        let plan = plan_rule_application(
+            &cfg,
+            &window("firefox", "Navigator"),
+            "Painting",
+            "Reading",
+            "Reading",
+            always,
+        );
+        assert!(plan.is_none(), "no apply is needed");
+        assert!(
+            plan.clear_bookkeeping,
+            "but the rule bookkeeping must be dropped anyway"
+        );
     }
 
     #[test]

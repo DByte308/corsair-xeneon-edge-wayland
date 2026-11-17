@@ -71,8 +71,11 @@ pub struct TouchPoint {
 /// A touchscreen device and the ranges its axes report.
 pub struct Reader {
     file: fs::File,
-    x_range: (i32, i32),
-    y_range: (i32, i32),
+    /// Slot state must survive across reads: protocol B sends
+    /// `ABS_MT_TRACKING_ID` once at touch-down and again only as -1 at lift, so a
+    /// decoder rebuilt per read would see later position frames with no slot and
+    /// drop them — one `begin` per contact and nothing else.
+    decoder: Decoder,
 }
 
 impl Reader {
@@ -93,8 +96,7 @@ impl Reader {
         }
         Ok(Reader {
             file,
-            x_range,
-            y_range,
+            decoder: Decoder::new(x_range, y_range),
         })
     }
 
@@ -133,8 +135,7 @@ impl Reader {
         if total == 0 {
             return Ok(Vec::new());
         }
-        let mut decoder = Decoder::new(self.x_range, self.y_range);
-        Ok(decoder.push(&bytes[..total]))
+        Ok(self.decoder.push(&bytes[..total]))
     }
 }
 
@@ -199,6 +200,12 @@ impl Decoder {
             0x39 => {
                 if value < 0 {
                     if let Some((id, x, y)) = self.slots.remove(&self.current_slot) {
+                        // A tap that begins and ends between two flushes never
+                        // appears in a live frame, so drop its start marker here:
+                        // otherwise it accumulates, and a device that re-issues a
+                        // tracking id would later report `update` instead of
+                        // `begin` for a brand-new contact.
+                        self.started.remove(&id);
                         self.ended.insert(id, (x, y));
                     }
                 } else {
@@ -426,6 +433,52 @@ mod tests {
         let out = d.push(&bytes);
         // No SYN_REPORT survived, so nothing is reported yet.
         assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// Protocol B repeats the tracking id only at touch-down and at lift, so the
+    /// decoder has to keep its slots between reads. This is the regression the
+    /// audit caught: a decoder per read produced one `begin` and nothing after.
+    #[test]
+    fn later_frames_without_a_tracking_id_still_update_and_end() {
+        let mut d = decoder();
+        // Frame 1: down.
+        let down = d.push(&frame(&[(3, 0x39, 100), (3, 0x35, 250), (3, 0x36, 100)]));
+        assert_eq!(down[0].phase, Phase::Begin);
+        // Frame 2: movement only — no tracking id at all.
+        let moved = d.push(&frame(&[(3, 0x35, 500), (3, 0x36, 200)]));
+        assert_eq!(moved.len(), 1, "the slot must still be known: {moved:?}");
+        assert_eq!(moved[0].id, 100);
+        assert_eq!(moved[0].phase, Phase::Update);
+        // Frame 3: lift only.
+        let lifted = d.push(&frame(&[(3, 0x39, -1)]));
+        assert_eq!(lifted[0].phase, Phase::End);
+        assert_eq!(lifted[0].id, 100);
+        assert!(d.live_ids().is_empty());
+    }
+
+    /// A tap that starts and ends inside one frame must not leave a start marker
+    /// behind: the id could be re-issued, and the next contact would then report
+    /// `update` instead of `begin`.
+    #[test]
+    fn a_tap_inside_one_frame_does_not_leak_its_start_marker() {
+        let mut d = decoder();
+        d.push(&frame(&[(3, 0x39, 7), (3, 0x35, 100)]));
+        d.push(&frame(&[(3, 0x39, -1)]));
+        // A new contact reusing the same tracking id is a fresh touch-down.
+        let again = d.push(&frame(&[(3, 0x39, 7), (3, 0x35, 100)]));
+        assert_eq!(again[0].phase, Phase::Begin, "{again:?}");
+    }
+
+    /// Slot reuse: ending one contact and starting another on the same slot must
+    /// report the lift before the new touch-down.
+    #[test]
+    fn a_slot_reused_in_one_frame_ends_the_old_contact_first() {
+        let mut d = decoder();
+        d.push(&frame(&[(3, 0x2f, 0), (3, 0x39, 11), (3, 0x35, 100)]));
+        let both = d.push(&frame(&[(3, 0x39, -1), (3, 0x39, 12), (3, 0x35, 900)]));
+        let phases: Vec<(i32, Phase)> = both.iter().map(|p| (p.id, p.phase)).collect();
+        assert_eq!(phases[0], (11, Phase::End), "{phases:?}");
+        assert_eq!(phases[1], (12, Phase::Begin), "{phases:?}");
     }
 
     #[test]

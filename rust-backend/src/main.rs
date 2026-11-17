@@ -447,7 +447,13 @@ impl Backend {
                 if !self.ddc.ready() {
                     return;
                 }
-                let blanked = self.ddc.snapshot()["values"]["d6"]["value"].as_i64() != Some(1);
+                // C++ reads `it != end && current != 1`, i.e. an unknown state
+                // counts as "not blanked" and requests ON. Inverting that would
+                // blank the panel whenever the seeded get had not landed yet.
+                let blanked = matches!(
+                    self.ddc.snapshot()["values"]["d6"]["value"].as_i64(),
+                    Some(value) if value != 1
+                );
                 // The panel power write is unsafe-gated; a gesture carries an
                 // explicit reason the way a UI click does, and nothing else may.
                 let confirmation = hid::Confirmation::approve("blank-toggle gesture");
@@ -505,6 +511,16 @@ impl Backend {
             |name| profiles.exists(name),
         );
         if plan.is_none() {
+            // A restore can be finished without applying anything (the profile the
+            // rule replaced is already back in force); the bookkeeping still has
+            // to go, or `appliedProfile` stays stale.
+            if plan.clear_bookkeeping {
+                let mut state = self.rule_state.lock().unwrap_or_else(|p| p.into_inner());
+                state.applied.clear();
+                state.before.clear();
+                drop(state);
+                self.broadcast("rules", self.rules_snapshot());
+            }
             return;
         }
         // The same path a click takes, so a rule cannot apply a profile
