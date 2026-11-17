@@ -116,14 +116,19 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   re-runs four processes per `system.info`). Empty means "not found" and the
   Settings pane already renders that as `not found` with a note, so the honest
   answer reaches the operator instead of a plausible one.
-- **One version number.** `rust-backend` was `0.1.0` while the interface, the
-  Tauri host and the packaging metadata were `0.7.0`, and
-  `page-settings.js` warns whenever the agent's `system.version` differs from
-  the interface's — so cutover would have shown the orange "the agent serving
-  the panel is another version" banner on every Settings pane. The backend is
-  now `0.7.0` and `Cargo.lock` matches. The four places that carry the version
-  (`rust-backend/Cargo.toml`, `tauri-app/Cargo.toml`, `ui/package.json`,
-  `packaging/*.metainfo.xml`) still move by hand: bump them together.
+- **One version number, seven carriers.** `rust-backend` was `0.1.0` while
+  everything else was `0.7.0`, and `page-settings.js` warns whenever the agent's
+  `system.version` differs from the interface's — so cutover would have shown
+  the orange "the agent serving the panel is another version" banner on every
+  Settings pane. The backend is `0.7.0` now. The carriers, which still move by
+  hand (bump them together): `rust-backend/Cargo.toml`,
+  `tauri-app/Cargo.toml`, `tauri-app/tauri.conf.json`, `ui/package.json`,
+  `packaging/dev.edgeline.Ctl.metainfo.xml`, and `agent/CMakeLists.txt`
+  (`project(edgeline-agent VERSION …)`). The seventh, `updates.rs`
+  `EDGELINE_VERSION`, which drives the release-tag comparison and the
+  User-Agent, now takes `env!("CARGO_PKG_VERSION")` and is pinned to it by
+  `updates::tests::current_version_is_parseable` — it used to be a literal, so a
+  crate bump alone made the updater nag an install that was already current.
 - **Event broadcast landed** (task #17, cutover blocker). The UI's
   `api.onEvent` paths now have a Rust source: `sensors` streaming (interval
   clamped to >= 250 ms, interruptible so a re-time or disable applies at once,

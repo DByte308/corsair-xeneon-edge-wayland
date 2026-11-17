@@ -27,11 +27,14 @@ use std::{
 };
 
 const EDGELINE_UPDATE_REPO: &str = "aabdelghani/corsair-xeneon-edge-linux";
-// The C++ agent takes EDGELINE_VERSION from a CMake cache variable; the Rust
-// control core is a separate package (0.1.0) so it pins the *app* version the
-// release feed is compared against. Keep it in lockstep with ui/package.json
-// and the agent's project VERSION.
-const EDGELINE_VERSION: &str = "0.7.0";
+// The app version the release feed is compared against, and the User-Agent it is
+// asked with. Taken from this crate's version so it cannot drift from what
+// `system.info` and `backend.info` report — the backend used to pin it by hand
+// at 0.7.0 while the crate was 0.1.0, and a one-sided bump would have nagged a
+// current install with "0.8.0 available". The other carriers (tauri-app Cargo +
+// tauri.conf.json, ui/package.json, packaging/*.metainfo.xml, the C++ agent's
+// project VERSION) still move by hand; keep them in lockstep.
+const EDGELINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Once a day is plenty for a tool that ships a release every few months, and it
 // keeps the app from being a rude neighbour to an unauthenticated API.
@@ -481,6 +484,10 @@ mod tests {
     #[test]
     fn current_version_is_parseable() {
         assert!(Version::parse(EDGELINE_VERSION).valid);
+        // The updater compares against the app version the release feed names, so
+        // it must be the same number `system.info` reports. This fails at the
+        // moment someone bumps the crate without thinking about the feed.
+        assert_eq!(EDGELINE_VERSION, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
