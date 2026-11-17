@@ -1112,9 +1112,16 @@ impl SensorSource {
     /// streaming on does the immediate poll the C++ start() does and records
     /// the state; a background worker in main.rs re-polls at the stored
     /// interval and broadcasts the snapshot while `streaming` is true.
-    pub fn set_streaming(&mut self, enabled: bool, interval_ms: u32) {
+    ///
+    /// `interval_ms` is optional: a client that disables the stream without
+    /// naming an interval keeps the rate it chose earlier, instead of being
+    /// reset to the dispatch default.
+    pub fn set_streaming(&mut self, enabled: bool, interval_ms: Option<u32>) {
         self.streaming = enabled;
-        self.streaming_interval_ms = interval_ms.max(250);
+        if let Some(interval_ms) = interval_ms {
+            // Clamped so a client cannot spin the worker at 0 ms.
+            self.streaming_interval_ms = interval_ms.max(250);
+        }
         if enabled {
             self.poll();
         }
@@ -1283,6 +1290,35 @@ pub fn interfaces_json(sensors: &SensorSource) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stream rate belongs to the client that chose it: a bare disable must
+    /// not reset it, and no client may spin the worker below the floor.
+    #[test]
+    fn streaming_interval_survives_a_bare_disable_and_is_clamped() {
+        let mut source = SensorSource::new();
+        assert_eq!(source.streaming_interval(), 1000, "the C++ start() default");
+        assert!(!source.streaming());
+
+        // A chosen interval is kept, and is clamped up to the 250 ms floor.
+        source.set_streaming(false, Some(5000));
+        assert_eq!(source.streaming_interval(), 5000);
+        assert!(!source.streaming());
+        source.set_streaming(false, Some(1));
+        assert_eq!(source.streaming_interval(), 250);
+
+        // Disabling without an interval keeps the rate for the next enable.
+        source.set_streaming(false, Some(2000));
+        source.set_streaming(false, None);
+        assert_eq!(source.streaming_interval(), 2000);
+        assert!(!source.streaming());
+
+        // Enabling records the flag the worker polls on.
+        source.set_streaming(true, None);
+        assert!(source.streaming());
+        assert_eq!(source.streaming_interval(), 2000);
+        source.set_streaming(false, None);
+        assert!(!source.streaming());
+    }
 
     fn near(a: f64, b: f64, eps: f64) -> bool {
         (a - b).abs() < eps

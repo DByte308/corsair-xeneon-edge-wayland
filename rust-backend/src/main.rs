@@ -255,7 +255,6 @@ impl Backend {
     }
 
     /// Push an unsolicited event to every connected client (the C++ agent's
-    /// Push an unsolicited event to every connected client (the C++ agent's
     /// `RpcServer::broadcast`). Each `serve()` connection subscribes a receiver
     /// and forwards the `{event,data}` line. A dropped receiver (client gone)
     /// is ignored, and a lagged one just misses intermediate events.
@@ -561,12 +560,14 @@ impl Backend {
                     .get("enabled")
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
+                // `intervalMs` is optional so a bare disable keeps the rate the
+                // client chose before; only enabling without one uses the default.
                 let interval_ms = request
                     .params
                     .get("intervalMs")
                     .and_then(Value::as_u64)
-                    .unwrap_or(1000)
-                    .min(u32::MAX as u64) as u32;
+                    .map(|ms| ms.min(u32::MAX as u64) as u32)
+                    .or(if enabled { Some(1000) } else { None });
                 {
                     let mut guard =
                         self.sensors.lock().unwrap_or_else(|p| p.into_inner());
@@ -1026,7 +1027,11 @@ impl Drop for AbortOnDrop {
 /// running it on a tokio worker would block that thread for the duration of the
 /// spawns (tens of ms, seconds under GPU/systemd pressure) while every other
 /// `sensors.*` arm queues on the same mutex.
-async fn poll_sensors(backend: &Arc<Backend>) -> Value {
+///
+/// `None` means the poll itself failed (the blocking task panicked or was
+/// cancelled). The caller must not broadcast that: clients replace
+/// `state.sensors` wholesale, so an error object would blank every tile.
+async fn poll_sensors(backend: &Arc<Backend>) -> Option<Value> {
     let inner = backend.clone();
     tokio::task::spawn_blocking(move || {
         let mut guard = inner.sensors.lock().unwrap_or_else(|p| p.into_inner());
@@ -1034,7 +1039,8 @@ async fn poll_sensors(backend: &Arc<Backend>) -> Value {
         sensors::snapshot_json(guard.latest())
     })
     .await
-    .unwrap_or_else(|error| json!({ "error": format!("sensor poll failed: {error}") }))
+    .map_err(|error| eprintln!("sensor poll failed: {error}"))
+    .ok()
 }
 
 /// Merge the live media now-playing/notifications into a sensors snapshot, as
@@ -1187,7 +1193,12 @@ async fn main() -> Result<()> {
                 }
                 // The poll shells out (nvidia-smi, systemctl, lspci); keep it off
                 // the runtime worker so other RPC arms are not stalled by it.
-                let snapshot = poll_sensors(&backend).await;
+                let Some(snapshot) = poll_sensors(&backend).await else {
+                    // Never broadcast the failure (it would blank the dashboard);
+                    // back off a second so a stuck poll cannot spin this loop.
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                };
                 // Media is merged in here, exactly as `state.all` does: the
                 // dashboard replaces `state.sensors` wholesale on each event,
                 // so the bare snapshot's placeholder now-playing/notifications

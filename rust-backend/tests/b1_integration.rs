@@ -265,23 +265,30 @@ fn b1_sensors_stream_broadcasts_merged_snapshots() {
     reference_keys.sort();
     assert_eq!(event_keys, reference_keys, "event keys must match state.all.sensors");
 
-    // The five media keys are the ones the raw snapshot fakes; they must carry
-    // the live values, not the placeholders.
-    for key in [
-        "notifications",
-        "notifyActive",
-        "notifyError",
-        "nowPlaying",
-        "sessionBusOk",
-    ] {
+    // The media keys are the ones the raw snapshot fakes; they must carry the
+    // live values, not the placeholders. `nowPlaying` is compared field by field
+    // minus `positionUs`/`art`, which `read_now_playing` re-reads on every call
+    // and so legitimately differ between the two snapshots.
+    for key in ["notifications", "notifyActive", "notifyError", "sessionBusOk"] {
         assert_eq!(
             payload.get(key),
             reference.get(key),
             "'{key}' in the sensors event must be the live media value"
         );
     }
+    let playing = payload["nowPlaying"].as_object().expect("nowPlaying object");
+    let reference_playing = reference["nowPlaying"]
+        .as_object()
+        .expect("nowPlaying object in state.all");
+    for key in ["valid", "player", "title", "artist", "album", "status", "lengthUs"] {
+        assert_eq!(
+            playing.get(key),
+            reference_playing.get(key),
+            "nowPlaying.{key} in the sensors event must be the live media value"
+        );
+    }
     assert!(
-        payload["nowPlaying"].get("valid").is_some(),
+        playing.contains_key("valid"),
         "nowPlaying must be a media object, not a placeholder: {payload}"
     );
 
