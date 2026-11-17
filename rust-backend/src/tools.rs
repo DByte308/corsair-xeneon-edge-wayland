@@ -233,10 +233,16 @@ mod tests {
     /// `find_in_path` in full: first match wins, and only a real executable
     /// file counts. Written against fixtures so it fails if the lookup is
     /// replaced by a bare `which` spawn or loses an executable-bit check.
+    ///
+    /// Note what is deliberately NOT asserted here: that an empty `PATH`
+    /// component (which means the current directory) is skipped. Proving it
+    /// needs a tool in the cwd, and `set_current_dir` is process-global in a
+    /// parallel harness, so the doc comment on `find_in_path` is the statement
+    /// of record for that rule instead of an assertion that cannot fail.
     #[test]
     fn path_lookup_requires_a_real_executable_and_takes_the_first() {
-        let root = temp_dir();
-        let (first, second) = (root.join("first"), root.join("second"));
+        let root = TestDir::new();
+        let (first, second) = (root.path.join("first"), root.path.join("second"));
         for dir in [&first, &second] {
             fs::create_dir_all(dir).unwrap();
         }
@@ -251,19 +257,23 @@ mod tests {
         );
 
         // Each of these is a plausible mistake that must not match.
-        let only_bad = temp_dir();
+        let only_bad_dir = TestDir::new();
+        let only_bad = &only_bad_dir.path;
         fs::write(only_bad.join("edgeline-fixture-plain"), "not executable").unwrap();
         fs::create_dir(only_bad.join("edgeline-fixture-dir")).unwrap();
         let dangling = only_bad.join("edgeline-fixture-dangling");
         symlink(only_bad.join("nowhere"), &dangling).unwrap();
-        let path = std::env::join_paths([&only_bad]).unwrap();
-        for name in ["edgeline-fixture-plain", "edgeline-fixture-dir", "edgeline-fixture-dangling"] {
+        let path = std::env::join_paths([only_bad]).unwrap();
+        for name in [
+            "edgeline-fixture-plain",
+            "edgeline-fixture-dir",
+            "edgeline-fixture-dangling",
+        ] {
             assert_eq!(find_in_path(name, Some(&path)), "", "{name} must not match");
         }
 
-        // An empty component means "the current directory": skipped on purpose.
-        let empty_component = format!(":{}", only_bad.display());
-        assert_eq!(find_in_path(exe, Some(OsStr::new(&empty_component))), "");
+        // A tool that exists nowhere on PATH, and no PATH at all.
+        assert_eq!(find_in_path(exe, Some(OsStr::new(""))), "");
         assert_eq!(find_in_path(exe, None), "");
     }
 
@@ -272,19 +282,33 @@ mod tests {
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    fn temp_dir() -> PathBuf {
-        // pid + nanos + counter: unique even when tests run in parallel.
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "edgeline-tools-{}-{nanos}-{n}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        path
+    /// A unique temp dir, removed on drop so repeated suite runs do not litter
+    /// /tmp (and so a failing assertion still cleans up).
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new() -> Self {
+            // pid + nanos + counter: unique even when tests run in parallel.
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "edgeline-tools-{}-{nanos}-{n}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 }
