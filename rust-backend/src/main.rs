@@ -8,6 +8,7 @@ mod model;
 mod touch;
 mod sensors;
 mod profiles;
+mod updates;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -38,6 +39,7 @@ struct Backend {
     touch: std::sync::Mutex<touch::Touch>,
     sensors: std::sync::Mutex<sensors::SensorSource>,
     media: media::Media,
+    updates: updates::UpdateChecker,
     shutdown: watch::Sender<bool>,
     profiles: profiles::ProfileStore,
     rules: profiles::RulesStore,
@@ -562,6 +564,37 @@ impl Backend {
                     .context("colormgr probe panicked")?;
                 Ok(snapshot)
             }
+            "updates.check" => {
+                // The C++ agent defaults `manual` to true so a hand-clicked
+                // check is never throttled or disabled away; preserve that.
+                let manual = request
+                    .params
+                    .get("manual")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                Ok(match self.updates.check(manual).await {
+                    updates::Outcome::Available { version, url } => {
+                        json!({ "state": "available", "version": version, "url": url })
+                    }
+                    updates::Outcome::Current { version } => {
+                        json!({ "state": "current", "version": version })
+                    }
+                    updates::Outcome::Failed { error } => {
+                        json!({ "state": "failed", "error": error })
+                    }
+                    updates::Outcome::Quiet => json!({ "state": "quiet" }),
+                })
+            }
+            "updates.settings" => {
+                if let Some(enabled) = request.params.get("enabled").and_then(Value::as_bool) {
+                    self.updates.set_enabled(enabled);
+                }
+                if let Some(skip) = request.params.get("skipVersion").and_then(Value::as_str) {
+                    self.updates.set_skipped_version(skip);
+                }
+                Ok(json!({ "enabled": self.updates.enabled(),
+                           "skippedVersion": self.updates.skipped_version() }))
+            }
             _ => bail!("Unsupported Rust backend method: {}", request.method),
         }
     }
@@ -787,6 +820,7 @@ async fn main() -> Result<()> {
     ddc.start();
     let ddc_worker = ddc.clone();
     tokio::spawn(async move { ddc_worker.run().await; });
+    let updates_settings = updates::UpdateChecker::config_dir(&home()?);
     let backend = Arc::new(Backend {
         kwin: kwin::Kwin::new(&scripts).await?,
         hid: std::sync::Mutex::new(None),
@@ -794,6 +828,7 @@ async fn main() -> Result<()> {
         touch: std::sync::Mutex::new(touch::Touch::new(touch::config::touch_path())),
         sensors: std::sync::Mutex::new(sensors::SensorSource::new()),
         media: media::Media::new().await,
+        updates: updates::UpdateChecker::new(updates_settings),
         shutdown,
         profiles,
         rules,
