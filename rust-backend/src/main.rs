@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pub mod hardware;
+mod ddc;
 mod hid;
 mod kwin;
 mod model;
@@ -29,6 +30,7 @@ struct Request {
 struct Backend {
     kwin: kwin::Kwin,
     hid: std::sync::Mutex<Option<hid::Device>>,
+    ddc: std::sync::Arc<ddc::Ddc>,
     shutdown: watch::Sender<bool>,
 }
 
@@ -117,6 +119,118 @@ impl Backend {
                 Ok(json!({ "available": true, "path": device.path().display().to_string(),
                     "brightness": params.brightness, "backlight": params.backlight,
                     "contrast": params.contrast, "red": params.red, "green": params.green, "blue": params.blue }))
+            }
+            "screen.state" => {
+                // Mirror Api::screenSnapshot(): surfaced by A1 per hid.rs. The
+                // HID channel caches the last settled parameters; `refresh`
+                // re-queries the panel for a change made from its own menu.
+                let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+                if guard.is_none() {
+                    match hid::Device::open() {
+                        Ok(device) => *guard = Some(device),
+                        Err(_) => return Ok(json!({ "available": false,
+                            "error": "no accessible Edge Bragi HID device" })),
+                    }
+                }
+                let device = guard.as_ref().context("hid device unavailable")?;
+                if request.params.get("refresh").and_then(Value::as_bool).unwrap_or(false) {
+                    let _ = device.read_screen_params();
+                }
+                match device.screen_params() {
+                    Some(params) => Ok(json!({ "available": true,
+                        "brightness": params.brightness, "backlight": params.backlight,
+                        "contrast": params.contrast })),
+                    None => Ok(json!({ "available": false,
+                        "error": device.screen_error().unwrap_or_else(|| "screen parameters have not been read".into()) })),
+                }
+            }
+            "screen.set" => {
+                // Brightness is the only HID-exposed field; backlight and
+                // contrast stay on DDC where the rest of the app caches them.
+                // Mirrors Api::setScreenParam(): a Confirmation gates the write.
+                let field = parameter("field")?;
+                if field != "brightness" {
+                    bail!("'field' must be brightness");
+                }
+                let value = request.params.get("value").and_then(Value::as_i64)
+                    .context("Missing integer 'value'")?;
+                if !(0..=100).contains(&value) {
+                    bail!("'value' must be 0..100");
+                }
+                let reason = request.params.get("reason").and_then(Value::as_str)
+                    .unwrap_or("set screen brightness");
+                let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+                if guard.is_none() {
+                    *guard = Some(hid::Device::open().context("no accessible Edge Bragi HID device")?);
+                }
+                let device = guard.as_ref().context("hid device unavailable")?;
+                device.set_brightness(value as u8, &hid::Confirmation::approve(reason))?;
+                let params = device.screen_params().context("screen parameters unavailable")?;
+                Ok(json!({ "available": true, "brightness": params.brightness,
+                    "backlight": params.backlight, "contrast": params.contrast }))
+            }
+            "ddc.state" => Ok(self.ddc.snapshot()),
+            "ddc.get" => {
+                if !self.ddc.ready() {
+                    bail!("no panel on DDC yet");
+                }
+                let code = request.params.get("code").and_then(Value::as_i64)
+                    .context("Missing integer 'code'")?;
+                if !(0..=255).contains(&code) {
+                    bail!("'code' must be 0..255");
+                }
+                self.ddc.get_vcp(code as u8);
+                Ok(json!({ "queued": true }))
+            }
+            "ddc.set" => {
+                if !self.ddc.ready() {
+                    bail!("no panel on DDC yet");
+                }
+                let code = request.params.get("code").and_then(Value::as_i64)
+                    .context("Missing integer 'code'")?;
+                let value = request.params.get("value").and_then(Value::as_i64)
+                    .context("Missing integer 'value'")?;
+                if !(0..=255).contains(&code) {
+                    bail!("'code' must be 0..255");
+                }
+                if !(0..=65535).contains(&value) {
+                    bail!("'value' out of range");
+                }
+                // Refuse a write the panel never advertised rather than letting
+                // ddcutil fail slowly for every slider drag.
+                if !self.ddc.caps_empty() && !self.ddc.has(code as u8) {
+                    bail!("this panel does not advertise VCP 0x{:02X}", code);
+                }
+                // Refuse an unsafe write (input source / power) unless the
+                // caller supplied an explicit confirmation, reusing the A0 gate.
+                let confirmation = request.params.get("reason").and_then(Value::as_str)
+                    .map(|r| hid::Confirmation::approve(r));
+                ddc::guard_unsafe_write(code as u8, confirmation.as_ref())?;
+                self.ddc.set_vcp(code as u8, value as u16);
+                Ok(json!({ "queued": true }))
+            }
+            "ddc.restoreDefaults" => {
+                if !self.ddc.ready() {
+                    bail!("no panel on DDC yet");
+                }
+                let scope = request.params.get("scope").and_then(Value::as_str)
+                    .unwrap_or("factory");
+                let code: u8 = match scope {
+                    "factory" => 0x04,
+                    "brightness" => 0x05,
+                    "color" => 0x08,
+                    _ => bail!("scope must be factory, brightness or color"),
+                };
+                if !self.ddc.caps_empty() && !self.ddc.has(code) {
+                    bail!("this panel cannot restore that group");
+                }
+                self.ddc.set_vcp(code, 1);
+                // The panel moves several values at once, so re-read rather than
+                // guessing what it landed on.
+                for picture in [0x10u8, 0x12, 0x14, 0x16, 0x18, 0x1A, 0x87] {
+                    self.ddc.get_vcp(picture);
+                }
+                Ok(json!({ "scope": scope }))
             }
             "controller.ensure" => {
                 self.kwin.ensure().await?;
@@ -278,9 +392,18 @@ async fn main() -> Result<()> {
     let scripts = directory.join(format!("scripts-{}", std::process::id()));
     private_directory(&scripts)?;
     let (shutdown, mut signal) = watch::channel(false);
+    // A1: DDC/CI via ddcutil. The client runs one ddcutil child at a time; a
+    // background task drains the job queue after each enqueue. On bus discovery
+    // it fetches capabilities and seeds the standard reads so a UI connecting
+    // later has real values instead of placeholders.
+    let ddc = Arc::new(ddc::Ddc::new(ddc::DdcConfig::default()));
+    ddc.start();
+    let ddc_worker = ddc.clone();
+    tokio::spawn(async move { ddc_worker.run().await; });
     let backend = Arc::new(Backend {
         kwin: kwin::Kwin::new(&scripts).await?,
         hid: std::sync::Mutex::new(None),
+        ddc,
         shutdown,
     });
     let listener = UnixListener::bind(&socket)?;
