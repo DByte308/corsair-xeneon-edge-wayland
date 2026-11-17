@@ -80,10 +80,12 @@ impl Feed {
                 "Only KWin may publish windows".into(),
             ));
         }
-        *self.last_report.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(std::time::Instant::now());
         let snapshot = Snapshot::parse(payload)
             .map_err(|error| zbus::fdo::Error::InvalidArgs(error.to_string()))?;
+        // Stamped only after the payload parsed: a script publishing junk is not a
+        // working feed, and the watchdog exists to say so.
+        *self.last_report.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(std::time::Instant::now());
         *self.snapshot.write().await = snapshot;
         // The same report carries the active window: focus rides the feed rather
         // than a second script, so there is one trusted channel and one load path.
@@ -113,10 +115,10 @@ pub struct Kwin {
     /// Whether a focus report has arrived from the feed, i.e. whether rules can
     /// actually arm. `rules.get` reports this as `watching`.
     focus_watching: Arc<std::sync::atomic::AtomicBool>,
-    /// When the window feed was last asked for, and when it last reported. A
-    /// KWin script can load and never execute (measured: above ~4 concurrent
-    /// deploys, 2 of 5 silently did nothing), and without these two stamps the
-    /// result is an empty window list forever with no error anywhere.
+    /// When the window feed was last asked for, and when it last reported. A KWin
+    /// script can load and never execute — a stale tag after a crash, or enough
+    /// concurrent deploys to saturate KWin's scripting — and without these two
+    /// stamps the result is an empty window list forever with no error anywhere.
     feed_started: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     last_report: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }

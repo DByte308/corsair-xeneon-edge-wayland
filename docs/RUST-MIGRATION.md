@@ -96,11 +96,12 @@ cargo build --locked --release --manifest-path rust-backend/Cargo.toml
 cargo fmt --manifest-path rust-backend/Cargo.toml -- --check
 cargo clippy --locked --manifest-path rust-backend/Cargo.toml --all-targets -- -D warnings
 cd ui
-# Run this binary serially. It is not tidiness: above ~4 concurrent test backends
-# some KWin script deploys load and never execute (measured 2 of 5), so a parallel
-# run fails the window-feed test with a backend that cannot ever report. It also
-# drives one panel and one session bus, so an idle machine makes the timing
-# budgets meaningful:
+# Run this binary serially. It is not tidiness: several concurrent backends saturate
+# KWin's scripting and some feeds then never arm, so a parallel run fails the
+# window-feed test with a backend that cannot report. The deterministic failure rate
+# at default parallelism is roughly 1 in 8; the threshold itself is not established,
+# so just do not parallelise it. It also drives one panel and one session bus, so an
+# idle machine makes the timing budgets meaningful:
 cargo test --locked --manifest-path rust-backend/Cargo.toml \
   --test b1_integration -- --test-threads=1
 npm test

@@ -190,12 +190,19 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   focused window and the profile a rule applied; `restoreOnUnfocus`, the fallback
   profile and "never churn an already-active profile" follow `Api::onFocusChanged`
   step for step, and a rule applies profiles through the same path a click takes.
-  A KWin script deploy can load and never execute — measured: with five backends
-  deploying at once, two never reported while `window.start` answered `{"ok":true}`
-  for all five, and a stale tag after a crash does the same. The feed now stamps
-  when it was first asked for, and after 5 s of silence `window.snapshot.error` and
-  `rules.get.focusError` say so instead of leaving an empty list that looks like an
-  empty desktop. Two things to know before trusting it: the focus feed only exists once
+  A KWin script deploy can load and never execute: `loadScript` returns an id,
+  `run` returns Ok, `window.start` answers `{"ok":true}`, and no report ever
+  arrives — a stale tag after a crash is one way in, and several concurrent
+  backends saturating KWin's scripting is another. The exact conditions are not
+  established: five simultaneous backends gave 2/5 silent once and 0/5 in two
+  later runs, so do not quote a threshold, and do not run more than one backend
+  against a session. The feed now stamps when it was first asked for, and after 5 s
+  of silence `window.snapshot.error` and `rules.get.focusError` say so instead of
+  leaving an empty list that looks like an empty desktop. That watchdog covers
+  "loaded but never ran" only — a feed that worked and then died (a KWin restart
+  keeps `last_report` in the past but never re-arms the stamp) is not reported, the
+  same silence `watching` has. Two things to know before trusting it: the focus
+  feed only exists once
   `window.start`/`controller.ensure` has deployed the KWin overview script (the C++
   agent started its watcher unconditionally), and `watching` follows the C++
   meaning — it stays true if KWin stops reporting, so a silent feed looks armed.
