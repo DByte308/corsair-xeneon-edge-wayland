@@ -143,6 +143,12 @@ impl Harness {
         self.dir.join("backend.sock")
     }
 
+    /// Whether the backend is still running, for failure messages. Reads
+    /// `/proc` rather than `try_wait`, which would need `&mut` and could reap it.
+    fn alive(&self) -> bool {
+        std::path::Path::new(&format!("/proc/{}", self.backend_pid())).exists()
+    }
+
     /// The spawned backend process id, used to derive its DBus bus name
     /// (dev.edgeline.Windows.rust.p{backend_pid}).
     fn backend_pid(&self) -> u32 {
@@ -227,7 +233,11 @@ fn b1_read_only_rpc_contract() {
     let art = client.call("launchpad.action", json!({ "action": "artwork" })).unwrap();
     let image = &art["result"]["image"];
     assert!(
-        image.is_null() || image.as_str().map_or(false, |s| s.starts_with("data:image/jpeg;base64,")),
+        image
+            .is_null()
+            || image
+                .as_str()
+                .map_or(false, |s| s.starts_with("data:image/jpeg;base64,")),
         "artwork must be null or a JPEG data URL, got {art}"
     );
 
@@ -300,7 +310,8 @@ fn b1_sensors_stream_broadcasts_merged_snapshots() {
     // included. Compared key-for-key so a field added to one path only fails.
     let all = client.call("state.all", json!({})).unwrap();
     let reference = all["result"]["sensors"].clone();
-    let mut event_keys: Vec<&String> = payload.as_object().expect("object snapshot").keys().collect();
+    let mut event_keys: Vec<&String> =
+        payload.as_object().expect("object snapshot").keys().collect();
     let mut reference_keys: Vec<&String> =
         reference.as_object().expect("object snapshot").keys().collect();
     event_keys.sort();
@@ -386,7 +397,20 @@ fn b1_closed_connections_release_their_sockets() {
     let har = Harness::start("fds").expect("spawn edgeline-backend");
     har.wait_ready();
     let fd_dir = format!("/proc/{}/fd", har.backend_pid());
-    let open_fds = || std::fs::read_dir(&fd_dir).map(|d| d.count()).unwrap_or(0);
+    // One sample is not enough on a loaded machine: `/proc/<pid>/fd` can be
+    // momentarily unreadable, and that is a harness failure, not a leak. Retry,
+    // and keep the reason for the panic message.
+    let sample_fds =
+        || std::fs::read_dir(&fd_dir).map(|dir| dir.count()).map_err(|e| e.to_string());
+    let open_fds = || {
+        for _ in 0..25 {
+            if let Ok(count) = sample_fds() {
+                return count;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        0
+    };
 
     // Warm up: served connections, so lazily created state is in the baseline.
     for _ in 0..2 {
@@ -395,7 +419,13 @@ fn b1_closed_connections_release_their_sockets() {
     }
     std::thread::sleep(Duration::from_millis(300));
     let baseline = open_fds();
-    assert!(baseline > 0, "cannot read {fd_dir}");
+    assert!(
+        baseline > 0,
+        "cannot read {fd_dir} (pid {} alive={}, last error {:?})",
+        har.backend_pid(),
+        har.alive(),
+        sample_fds().err()
+    );
 
     for _ in 0..20 {
         let mut c = Client::connect(&har.socket()).unwrap();
@@ -422,7 +452,10 @@ fn b1_closed_connections_release_their_sockets() {
 #[test]
 fn b1_live_screen_cache_is_warm_for_an_early_client() {
     if std::env::var("EDGELINE_INTEGRATION_LIVE").as_deref() != Ok("1") {
-        eprintln!("skipping b1_live_screen_cache_is_warm_for_an_early_client (set EDGELINE_INTEGRATION_LIVE=1)");
+        eprintln!(
+            "skipping b1_live_screen_cache_is_warm_for_an_early_client \
+             (set EDGELINE_INTEGRATION_LIVE=1)"
+        );
         return;
     }
     let har = Harness::start("screen_warm").expect("spawn edgeline-backend");
@@ -471,7 +504,9 @@ fn b1_live_kwin_window_feed() {
     // `available` once KWin has reported a valid 2560×720 Edge.
     client.call("window.start", json!({})).unwrap();
     let mut snapshot = Value::Null;
-    for _ in 0..30 {
+    // Up to ~10 s: the budget is for a busy machine, not for a slow compositor.
+    // The startup HID seed read makes every test backend ~1 s slower to warm up.
+    for _ in 0..100 {
         snapshot = client.call("window.snapshot", json!({})).unwrap();
         if snapshot["result"]["available"].as_bool().unwrap_or(false) {
             break;
@@ -503,7 +538,16 @@ fn b1_live_kwin_window_feed() {
     let bus_name = format!("dev.edgeline.Windows.rust.p{}", har.backend_pid());
     let payload = r#"{"available":false,"windows":[]}"#;
     let out = std::process::Command::new("busctl")
-        .args(["--user", "call", &bus_name, "/Windows", "dev.edgeline.Windows", "Update", "s", payload])
+        .args([
+            "--user",
+            "call",
+            &bus_name,
+            "/Windows",
+            "dev.edgeline.Windows",
+            "Update",
+            "s",
+            payload,
+        ])
         .output();
     // This is the live-gated test: a real desktop (KDE) session always has
     // busctl, so a missing tool must not be silently skipped (that would hide a

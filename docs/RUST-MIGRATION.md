@@ -96,6 +96,10 @@ cargo build --locked --release --manifest-path rust-backend/Cargo.toml
 cargo fmt --manifest-path rust-backend/Cargo.toml -- --check
 cargo clippy --locked --manifest-path rust-backend/Cargo.toml --all-targets -- -D warnings
 cd ui
+# The live integration tests drive real hardware (HID, KWin, the panel) and share
+# it, so run them serially and on an otherwise idle machine:
+cargo test --locked --manifest-path rust-backend/Cargo.toml \
+  --test b1_integration -- --test-threads=1
 npm test
 node test/rust-backend.integration.js
 ```

@@ -190,8 +190,14 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   focused window and the profile a rule applied; `restoreOnUnfocus`, the fallback
   profile and "never churn an already-active profile" follow `Api::onFocusChanged`
   step for step, and a rule applies profiles through the same path a click takes.
+  Two things to know before trusting it: the focus feed only exists once
+  `window.start`/`controller.ensure` has deployed the KWin overview script (the C++
+  agent started its watcher unconditionally), and `watching` follows the C++
+  meaning — it stays true if KWin stops reporting, so a silent feed looks armed.
   Gate-C item: a rule that fires *moves the panel*, so the acceptance run should
-  include one real rule and its restore.
+  include one real rule and its restore, plus one `instance.Class` rule, because
+  `wmInstance` is empty for some clients (Vivaldi-flatpak here) and such a rule
+  silently never matches.
 - Rust backend still reports `hardware: "legacy C++ agent (not migrated)"` in
   `backend.info` — the C++ agent is still the running hardware owner for the
   Electron host; the Rust backend is invoked alongside it during dev. The
