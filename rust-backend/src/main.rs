@@ -278,7 +278,6 @@ impl Backend {
                 let mut guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
                 guard.set_config(&request.params)
             }
-            }
             "controller.ensure" => {
                 self.kwin.ensure().await?;
                 Ok(json!({"ok":true}))
