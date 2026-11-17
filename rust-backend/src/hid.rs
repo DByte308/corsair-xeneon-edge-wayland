@@ -149,6 +149,33 @@ pub fn find_edge_node() -> Result<PathBuf> {
     find_device(Path::new("/sys/class/hidraw"))
 }
 
+/// Read the Edge's product/serial identity from the hidraw sysfs uevent, so
+/// `device.state` can report them like the C++ agent's HidEnumerator. Falls back
+/// to the known product string and an empty serial if the sysfs node is missing.
+fn sysfs_identity(path: &Path) -> (String, String) {
+    let node = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let uevent = Path::new("/sys/class/hidraw")
+        .join(node)
+        .join("device/uevent");
+    let Ok(text) = fs::read_to_string(&uevent) else {
+        return ("CORSAIR XENEON EDGE".into(), String::new());
+    };
+    let mut product = "CORSAIR XENEON EDGE".to_string();
+    let mut serial = String::new();
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("HID_NAME=") {
+            if !v.is_empty() {
+                product = v.to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("HID_UNIQ=") {
+            if !v.is_empty() {
+                serial = v.to_string();
+            }
+        }
+    }
+    (product, serial)
+}
+
 /// A fully-open HID channel to the Edge Bragi interface.
 pub struct Hid {
     file: File,
@@ -215,6 +242,9 @@ impl Hid {
 /// last settled screen parameters so `state` is cheap and truthful.
 pub struct Device {
     hid: Mutex<Hid>,
+    path: PathBuf,
+    product: String,
+    serial: String,
     screen: Mutex<Option<ScreenParams>>,
     error: Mutex<Option<String>>,
 }
@@ -223,11 +253,26 @@ impl Device {
     pub fn open() -> Result<Device> {
         let path = find_edge_node()?;
         let hid = Hid::open(&path)?;
+        let (product, serial) = sysfs_identity(&path);
         Ok(Device {
             hid: Mutex::new(hid),
+            path,
+            product,
+            serial,
             screen: Mutex::new(None),
             error: Mutex::new(None),
         })
+    }
+
+    /// The Bragi hidraw path (for the Dashboard/Settings device pane).
+    pub fn device_info(&self) -> crate::state::DeviceInfo {
+        crate::state::DeviceInfo {
+            present: true,
+            accessible: true,
+            path: self.path.clone(),
+            product: self.product.clone(),
+            serial: self.serial.clone(),
+        }
     }
 
     /// Perform a gated exchange against the panel.
@@ -360,6 +405,9 @@ mod tests {
                 file: File::open("/dev/null").unwrap(),
                 path: PathBuf::from("/dev/null"),
             }),
+            path: PathBuf::from("/dev/null"),
+            product: "test".to_string(),
+            serial: "test".to_string(),
             screen: Mutex::new(None),
             error: Mutex::new(None),
         };
@@ -376,6 +424,9 @@ mod tests {
                 file: File::open("/dev/null").unwrap(),
                 path: PathBuf::from("/dev/null"),
             }),
+            path: PathBuf::from("/dev/null"),
+            product: "test".to_string(),
+            serial: "test".to_string(),
             screen: Mutex::new(None),
             error: Mutex::new(None),
         };

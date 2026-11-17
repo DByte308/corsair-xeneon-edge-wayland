@@ -67,9 +67,12 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   MUST NOT disturb the legacy rollback route (EDGELINE_BACKEND unset counts as
   the Electron path) until gate C.
 - **B** Cutover blockers (must land before B3/B4):
-  - \`state.all\` / \`device.state\` / \`system.info\` served by the Rust backend.
+  - \`state.all\` / \`device.state\` / \`system.info\` served by the Rust backend. ✅ **DONE**
+    (cutover blocker #16; ported to rust-backend/src/state.rs + main.rs dispatch
+    arms; live-verified on a real session bus; field-level parity vs `Api.cpp`
+    `systemSnapshot()` and `state.all`).
   - event-broadcast channel (per-connection writer registry) so the Rust backend
-    can push the events the dashboard relies on.
+    can push the events the dashboard relies on. ← **next blocker**
 - **B3** Make Tauri the default build / entry.
 - **B4** Remove the Electron \`ui/\` host + \`window-bridge.py\` + legacy runtime
   split — only after the visible acceptance gate (C) passes.
@@ -80,17 +83,19 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
 
 ### Honest gaps / limitations
 
-- **`state.all` is not served by the Rust backend.** The UI calls it on every
-  connect (`app.js refreshAll`, `dashboard.js start`, `main.js primeTrayState`).
-  Today this is masked because both hosts send generic RPC to the C++ agent
-  socket (`edgeline.sock`); the Rust backend socket (`edgeline-rust/backend.sock`)
-  only serves core/launchpad/window methods. **Cutover-critical: must be ported
-  before B3/B4** (when the C++ agent is retired).
+- **`state.all` / `device.state` / `system.info` are now served by the Rust
+  backend** (cutover blocker #16, landed). The UI calls `state.all` on every
+  connect (`app.js refreshAll`, `dashboard.js start`, `main.js primeTrayState`),
+  and today it is still masked by the C++ agent owning the generic socket
+  (`edgeline.sock`). Once the event-broadcast channel lands (next blocker), the
+  Rust backend is end-to-end parity for the state snapshots. `state.all`
+  reproduces the nine C++ keys in order (`system/device/ddc/screen/touch/sensors/
+  rules/color/touchConfig`).
 - **No event-broadcast channel.** The C++ agent pushes `ddc`, `screen`, `touch`,
   `sensors`, `ddcLog`, `device`, `rules`, `touchConfig` events; the Rust backend
   is request/response only and has no per-connection writer registry to push to.
   Dashboard tiles and live updates depend on `api.onEvent`. Also masked today by
-  the C++ agent, and cutover-critical.
+  the C++ agent, and cutover-critical. ← **next blocker (todo #17)**.
 - Rust backend still reports `hardware: "legacy C++ agent (not migrated)"` in
   `backend.info` — the C++ agent is still the running hardware owner for the
   Electron host; the Rust backend is invoked alongside it during dev. The

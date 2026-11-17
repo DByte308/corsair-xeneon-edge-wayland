@@ -165,6 +165,18 @@ impl ProfileStore {
         &self.profiles_dir
     }
 
+    /// The login autostart entry, mirroring the C++ `settings::autostartEnabled()`:
+    /// `~/.config/autostart/edgeline.desktop` exists. (Pure read of a well-known
+    /// path; the interface owns writing it, so this is never set over RPC.)
+    pub fn autostart_enabled(&self) -> bool {
+        let mut home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        if home.as_os_str().is_empty() {
+            return false;
+        }
+        home.push(".config/autostart/edgeline.desktop");
+        home.exists()
+    }
+
     fn file_for(&self, name: &str) -> PathBuf {
         self.profiles_dir.join(format!("{}.json", slug_for(name)))
     }

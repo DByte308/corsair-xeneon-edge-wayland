@@ -8,6 +8,7 @@ mod media;
 mod model;
 mod touch;
 mod sensors;
+mod state;
 mod profiles;
 mod updates;
 use anyhow::{Context, Result, bail};
@@ -44,6 +45,7 @@ struct Backend {
     shutdown: watch::Sender<bool>,
     profiles: profiles::ProfileStore,
     rules: profiles::RulesStore,
+    socket_path: std::path::PathBuf,
 }
 
 fn uid() -> u32 {
@@ -142,6 +144,121 @@ fn color_snapshot() -> Value {
     }
 }
 impl Backend {
+    /// Facts about the Edge Bragi device (device.state). Returns the cached
+    /// device if it was opened, else attempts a best-effort open (a safe read)
+    /// so `state.all`/`device.state` report real presence during cutover; falls
+    /// back to a "not present" placeholder only when the device is genuinely
+    /// unavailable, so the UI still renders rather than erroring.
+    fn device_info(&self) -> state::DeviceInfo {
+        let mut guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.is_none() {
+            // Opening the Bragi control channel is a pure read; never write-gated.
+            *guard = hid::Device::open().ok();
+        }
+        if let Some(d) = guard.as_ref() {
+            return d.device_info();
+        }
+        state::DeviceInfo {
+            present: false,
+            accessible: false,
+            path: PathBuf::from("/dev/hidraw1"),
+            product: "XENEON EDGE".into(),
+            serial: String::new(),
+        }
+    }
+
+    /// The screen state (backlight/contrast/brightness) from the cached HID
+    /// channel, matching the C++ screenSnapshot().
+    fn screen_snapshot(&self) -> Value {
+        let guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(device) = guard.as_ref() else {
+            return json!({"available":false,"error":"no accessible Edge Bragi HID device"});
+        };
+        match (device.screen_params(), device.screen_error()) {
+            (Some(params), _) => json!({"available":true,
+                "brightness": params.brightness, "backlight": params.backlight,
+                "contrast": params.contrast}),
+            (None, Some(err)) => json!({"available":false, "error": err}),
+            (None, None) => json!({"available":false,
+                "error":"screen parameters have not been read"}),
+        }
+    }
+
+    /// Assemble the `system` snapshot (system.info), matching the C++
+    /// systemSnapshot() field contract.
+    fn system_info(&self) -> Value {
+        let home = home().unwrap_or_else(|_| PathBuf::from("/"));
+        let cfg = config_root().unwrap_or_else(|_| home.join(".config"));
+        let hid_log = home.join(".local/share/edgeline/hid.log");
+        let ddcutil_version = self.ddc.tool_version();
+        let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+        state::system_snapshot(&state::SystemInput {
+            version: env!("CARGO_PKG_VERSION"),
+            codename: "Cold Start",
+            config_path: &home.join(".config/edgeline"),
+            profiles_path: &cfg.join("profiles"),
+            ddcutil_path: "/usr/bin/ddcutil",
+            xinput_path: "/usr/bin/xinput",
+            i2c_bus: self.ddc.i2c_bus(),
+            autostart: self.profiles.autostart_enabled(),
+            updates_enabled: self.updates.enabled(),
+            hid_log: &hid_log,
+            ddcutil_version: &ddcutil_version,
+            xinput_version: "1.4",
+            session_type: &session_type,
+            socket: self.socket_path.as_path(),
+        })
+    }
+
+    /// Compose `state.all` from all nine module snapshots, merging the live
+    /// media now-playing/notifications into the sensors snapshot so the
+    /// dashboard gets them (the C++ agent put them inside sensorSnapshot).
+    async fn state_all(&self) -> Result<Value> {
+        // Each async module read is pulled into a scoped binding so no
+        // std::sync::MutexGuard is held across an .await (the media read is
+        // async) and so two guards on the SAME lock never overlap. The
+        // touch.state / touch.config_snapshot calls take self.touch once each
+        // in their own statement scope.
+        let media = self.media.snapshot().await;
+        let sensors = {
+            let guard = self.sensors.lock().unwrap_or_else(|p| p.into_inner());
+            let mut snap = sensors::snapshot_json(guard.latest());
+            if let Some(obj) = snap.as_object_mut() {
+                for k in ["notifications", "notifyActive", "notifyError", "nowPlaying", "sessionBusOk"] {
+                    if let Some(v) = media.get(k) {
+                        obj.insert(k.to_string(), v.clone());
+                    }
+                }
+            }
+            snap
+        };
+        let rules = {
+            let cfg = profiles::rules_from_json(&self.rules.load());
+            let mut r = profiles::rules_to_json(&cfg);
+            r["watching"] = json!(false);
+            r["path"] = json!(self.rules.path().display().to_string());
+            r
+        };
+        let (touch_state, touch_config) = {
+            // One lock acquisition for both read-only snapshots; avoid ever
+            // holding two guards on std::sync::Mutex simultaneously (non-reentrant).
+            let guard = self.touch.lock().unwrap_or_else(|p| p.into_inner());
+            (guard.state(), guard.config_snapshot())
+        };
+        Ok(state::state_all(
+            self.system_info(),
+            state::device_snapshot(&self.device_info()),
+            self.ddc.snapshot(),
+            self.screen_snapshot(),
+            touch_state,
+            sensors,
+            rules,
+            color_snapshot(),
+            touch_config,
+        ))
+
+    }
+
     async fn dispatch(&self, request: &Request) -> Result<Value> {
         let parameter = |name| {
             request
@@ -158,6 +275,9 @@ impl Backend {
                 "capabilities":["kwin-window-feed","edge-window-activation","window-fitting","native-window-picker","steam-launch","local-artwork"]}),
             ),
             "backend.stop" => Ok(json!({ "stopping": true })),
+            "system.info" => Ok(self.system_info()),
+            "device.state" => Ok(state::device_snapshot(&self.device_info())),
+            "state.all" => self.state_all().await,
             "screen.state" => {
                 // Mirror Api::screenSnapshot(): surfaced by A1 per hid.rs. The
                 // HID channel caches the last settled parameters; `refresh`
@@ -764,6 +884,7 @@ fn private_directory(path: &Path) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+
     let mut socket = None;
     let mut parent = None;
     let mut args = std::env::args().skip(1);
@@ -827,6 +948,7 @@ async fn main() -> Result<()> {
         shutdown,
         profiles,
         rules,
+        socket_path: socket.clone(),
     });
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
