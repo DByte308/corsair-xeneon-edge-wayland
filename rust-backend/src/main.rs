@@ -1210,6 +1210,15 @@ impl Backend {
                 }
             }
         }
+        // The write went over HID, which does not update the cache the way a DDC
+        // write updates `ddc.state` in the C++ agent. Read it back, or `screen.state`
+        // keeps reporting the value from before the apply.
+        {
+            let guard = self.hid.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(device) = guard.as_ref() {
+                let _ = device.read_screen_params();
+            }
+        }
         self.profiles.set_active(name);
         Ok(json!({
             "name": name,
@@ -1447,7 +1456,18 @@ fn refresh_after_hotplug(backend: &Arc<Backend>, presence: &hid::Presence) -> Va
             }
         }
     }
-    let _ = device.read_screen_params();
+    // A panel that has just been re-enumerated does not answer the parameter query
+    // yet: measured on the real Edge, the immediate read after a replug returns
+    // "HID reply timed out" and, without a retry, that error stays in the cache until
+    // something explicitly refreshes. Give the panel a moment, a few times.
+    let mut attempt = 0;
+    while device.read_screen_params().is_err() {
+        attempt += 1;
+        if attempt >= 3 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(700));
+    }
     let snapshot = screen_json(Some(&device));
     let mut guard = backend.hid_guard();
     match guard.as_ref() {

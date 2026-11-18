@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Window {
@@ -20,6 +21,13 @@ pub struct Snapshot {
     #[serde(default)]
     pub error: String,
     pub windows: Vec<Window>,
+    /// The compositor's outputs and its view of our own panel windows, passed
+    /// through for diagnostics. Untrusted input, so the counts are bounded and the
+    /// fields are only ever read, never acted on.
+    #[serde(default)]
+    pub screens: Vec<Value>,
+    #[serde(default)]
+    pub panel: Vec<Value>,
 }
 
 impl Snapshot {
@@ -29,6 +37,8 @@ impl Snapshot {
         }
         let mut value: Self = serde_json::from_str(input)?;
         value.windows.truncate(100);
+        value.screens.truncate(16);
+        value.panel.truncate(32);
         value.windows.retain(|w| canonical_uuid(&w.id).is_ok());
         for window in &mut value.windows {
             window.title = window.title.chars().take(256).collect();
