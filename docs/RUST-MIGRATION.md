@@ -130,6 +130,15 @@ node tauri-app/test-bridge.js
 GDK_BACKEND=wayland tauri-app/target/release/edgeline-desktop --smoke-test
 ```
 
+`node` is required at runtime by the native host, not only at build time: the
+app-facing host methods (`apps.list`, `clipboard.read`, `media.nowPlaying`,
+`system.telemetry`, `kdeconnect.devices`, `windows.list`, `diagnostics.read`) are served
+by `ui/host-bridge.js`, which the host starts and talks to over its own socket. A native
+package therefore has to `Depends: nodejs` or bundle a runtime, and must ship the bridge
+script as a resource — otherwise those six methods silently disappear on an installed
+system. The existing `packaging/deb` does not need this yet because it packages the
+Electron host, which carries its own embedded Node.
+
 WebKitGTK 4.1, GTK3 and the other Tauri Linux development libraries are required.
 `ui/node_modules/@fortawesome/fontawesome-free` supplies the already-used UI
 icons during staging. Generated web-dist, permissions and build artifacts are
@@ -203,6 +212,10 @@ up they contend for the i2c bus and the `dev.edgeline.Windows` name. Stop
 systemctl --user stop app-edgeline@autostart.service
 EDGELINE_BACKEND=rust tauri-app/target/release/edgeline-desktop
 ```
+
+Keep the preflight output in the run notes. It is the only part of this setup that
+describes the machine rather than the code, and it is the first thing anyone will ask
+about afterwards.
 
 Then drive the panel by hand (touch, unplug/replug, one profile, one rule) and
 finish with the rollback drill: stop it, start the old path again, confirm the

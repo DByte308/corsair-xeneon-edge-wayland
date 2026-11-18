@@ -989,10 +989,14 @@ async fn dispatch(
         ),
         "dashboard-layout" => {
             state.save(params["layout"].clone())?;
-            app.emit(
+            // Shell-only, like every other host event: `app.emit` would also reach
+            // app windows, and "host events never cross into an app window" should be
+            // true by structure, not by a permission that a later edit could widen.
+            emit_shell(
+                &app,
                 "agent-event",
                 json!({"event":"dashboard","data":params["layout"]}),
-            )?;
+            );
             Ok(json!(true))
         }
         "device-label-get" => Ok(json!(

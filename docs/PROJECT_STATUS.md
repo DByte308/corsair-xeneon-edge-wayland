@@ -63,7 +63,11 @@ deployed host (retire Electron), (3) cutover gate = a visible acceptance run,
 
 Downstream Phase B–D from the plan, each gated by the cutover decision:
 - **B1 done** (committed d58ddbe + 909f1a2 + fixup).
-- **B2** Enable Tauri `bundle.active=true` + native packaging (deb/AppImage).
+- **B2** Enable Tauri `bundle.active=true` + native packaging (deb/AppImage). Note: the
+  native host needs `node` at runtime for the app-facing host methods
+  (`ui/host-bridge.js`), so the package must depend on it or bundle a runtime — and the
+  bridge script has to be installed as a resource. Without that, six host methods vanish
+  on an installed system while working in the dev tree.
   MUST NOT disturb the legacy rollback route (EDGELINE_BACKEND unset counts as
   the Electron path) until gate C.
 - **B** Cutover blockers (must land before B3/B4):
