@@ -94,12 +94,23 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
     dashboard's now-playing tile and notification badge survive each tick.
 - **B3** Make Tauri the default build / entry.
 - **B4** Remove the Electron \`ui/\` host + \`window-bridge.py\` + legacy runtime
-  split — only after the visible acceptance gate (C) passes. **Not a directory
-  deletion any more:** `ui/host/*`, `ui/host-bridge.js`, `ui/apps/registry.js` and
-  `ui/diagnostics.js` are load-bearing for the native host (the app-facing methods and
-  the registry live there), so B4 means removing the Electron scaffolding and moving
-  those four paths somewhere neutral. A cleanup commit that just deletes `ui/` would
-  halve a working host and no test would notice.
+  split. ✅ **DONE** for the Electron host: `ui/main.js`, `preload.js`,
+  `launchpad.js`, `rust-backend.js`, `rust-services.js`, `edge-display.js`,
+  `tablet-deck.js`, `window-overview.js`, `window-selection.js`, `workarea.js`,
+  `window-bridge.py`, `shot.sh`, `kwin-place-app.js` and `kwin-snap-window.js` are
+  gone, along with their eight suites (`app-parity`, `app-stacking`, `app-theme`,
+  `edge-area`, `edge-display`, `kwin-controller`, `window-selection`, `workarea`).
+  `ui/` is now the shared asset tree — renderer, assets, apps, host modules and the
+  KWin scripts the Rust backend embeds — not an Electron project. `tauri-app/test-bridge.js`
+  freezes the 26-method web API as an explicit list instead of comparing against the
+  deleted preload. `install-dev.sh` writes an autostart entry for the native host, and
+  `packaging/deb/build.sh` fails loudly instead of packaging a host that no longer
+  exists (native packaging is B2).
+  **Coverage that went with them**, stated rather than hidden: edge-area geometry,
+  app stacking/lowering, per-app theming, `kwin-place-app` window decoration and the
+  Electron controller lifecycle are no longer tested. The native equivalents live in
+  Rust/Tauri and are exercised only by hand (gate C) — porting those assertions is the
+  honest follow-up, not a claim that the removal was free.
 - **C** Visible acceptance run on the real Edge (physical touch, app switching,
   tray, hotplug, Tablet Deck, dashboard tiles) — operator-hosted.
 - **D** Enable gestures behind the strict opt-in flag, validated on the real

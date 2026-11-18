@@ -4,10 +4,17 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
-let legacy;
-vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../ui/preload.js'),'utf8'),{
-  require:()=>({contextBridge:{exposeInMainWorld:(_name,api)=>{legacy=api;}},ipcRenderer:{invoke(){},on(){}}}),
-});
+// The Electron preload that used to be the API surface is gone (B4). The contract it
+// stood for is frozen here instead: every method the renderer calls by name. A frozen
+// list can fail when the bridge loses one, which a comparison against deleted code
+// could no longer do.
+const legacy=Object.fromEntries([
+  'activateEdgeWindow','appInfo','autostartGet','autostartSet','call','closeCalibration',
+  'connected','dashboard','dashboardLayout','dashboardState','deviceLabelGet','deviceLabelSet',
+  'edgeDisplay','edgeTaskbarAction','edgeWindows','launchpadAction','onDashboardStatus',
+  'onDisplaysChanged','onEvent','onStatus','onSystemTheme','openCalibration','openExternal',
+  'openTabletDeck','ripple','windowAction',
+].map((name)=>[name,true]));
 const calls=[];const events={};
 const window={__TAURI__:{core:{invoke:async(command,args)=>{calls.push({command,args});return {ok:true};}},event:{listen:(name,callback)=>{events[name]=callback;}}}};
 window.top=window;

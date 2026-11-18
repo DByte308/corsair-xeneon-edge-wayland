@@ -19,7 +19,7 @@ install -m644 "$ROOT/packaging/icons/edgeline.svg" \
               "$ICONS/scalable/apps/dev.edgeline.Ctl.svg"
 
 # Exec points into the checkout rather than /usr/bin.
-sed -e "s#^Exec=.*#Exec=$ROOT/ui/node_modules/.bin/electron $ROOT/ui --class=edgeline#" \
+sed -e "s#^Exec=.*#Exec=env EDGELINE_BACKEND=rust $ROOT/tauri-app/target/release/edgeline-desktop#" \
     "$ROOT/packaging/dev.edgeline.Ctl.desktop" > "$APPS/dev.edgeline.Ctl.desktop"
 chmod 644 "$APPS/dev.edgeline.Ctl.desktop"
 

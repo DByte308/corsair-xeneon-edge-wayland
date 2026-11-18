@@ -33,9 +33,13 @@ cmake --build "$ROOT/agent/build" -j"$(nproc)" >/dev/null
 ( cd "$ROOT/agent/build" && ctest --output-on-failure >/dev/null )
 
 echo "==> ui"
-( cd "$ROOT/ui" && npx --no-install electron-builder --linux dir --publish never >/dev/null )
-UNPACKED="$ROOT/ui/dist/linux-unpacked"
-[ -d "$UNPACKED" ] || { echo "electron-builder produced no linux-unpacked"; exit 1; }
+# The Electron host was removed (B4). Native packaging is B2 and not written yet:
+# it has to bundle the Tauri host, ship ui/host-bridge.js as a resource and depend on
+# `node` at runtime (see docs/RUST-MIGRATION.md). Failing here is deliberate — a
+# package built from this script would be missing six host methods.
+echo "packaging/deb/build.sh packages the removed Electron host." >&2
+echo "Native packaging is B2; see docs/RUST-MIGRATION.md." >&2
+exit 1
 
 echo "==> tree"
 install -d "$PKG/DEBIAN" "$PKG/opt/$APP" "$PKG/usr/bin" \
