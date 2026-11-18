@@ -148,6 +148,7 @@ const APP_BRIDGE: &str = r#"
             stub: stub,
             acl: 'unknown',
             genericIpc: 'unknown',
+            events: 'unknown',
         };
         return probe(function () { return invoke('edgeline', { method: 'backend.info' }); })
             .then(function (verdict) {
@@ -158,7 +159,26 @@ const APP_BRIDGE: &str = r#"
             })
             .then(function (verdict) {
                 payload.genericIpc = verdict;
-                return invoke('app_isolation', { report: payload });
+                // The event bus is the other way out of a sandbox: listening leaks the
+                // panel stream, emitting lets an app drive the shell.
+                return probe(function () {
+                    return window.__TAURI_INTERNALS__.invoke('plugin:event|listen', {
+                        event: 'agent-event', target: { kind: 'Any' }, handler: 0,
+                    });
+                });
+            })
+            .then(function (verdict) {
+                var listening = verdict;
+                return probe(function () {
+                    return window.__TAURI_INTERNALS__.invoke('plugin:event|emit', {
+                        event: 'ui.action', payload: { action: 'dashboard-toggle' },
+                    });
+                }).then(function (emitting) {
+                    payload.events = (listening === 'refused' && emitting === 'refused')
+                        ? 'refused'
+                        : 'listen=' + listening + ',emit=' + emitting;
+                    return invoke('app_isolation', { report: payload });
+                });
             });
     }
     report().catch(function () {});
@@ -524,7 +544,7 @@ async fn show_home(app: &AppHandle, state: &Host, on: bool) -> Result<Value> {
         if let Some(w) = app.get_webview_window("dashboard") {
             w.hide()?;
         }
-        app.emit("dashboard-status", json!({"open":false}))?;
+        emit_shell(&app, "dashboard-status", json!({"open":false}));
         return Ok(json!({"ok":true}));
     }
     if edge(app)?.is_none() {
@@ -546,7 +566,7 @@ async fn show_home(app: &AppHandle, state: &Host, on: bool) -> Result<Value> {
         )?;
     }
     state.place().await?;
-    app.emit("dashboard-status", json!({"open":true}))?;
+    emit_shell(&app, "dashboard-status", json!({"open":true}));
     Ok(json!({"ok":true}))
 }
 async fn show_settings(app: &AppHandle, state: &Host) -> Result<Value> {
@@ -791,7 +811,8 @@ async fn app_isolation(
         && report["bridgeFrozen"] == true
         && report["bridgeLocked"] == true
         && report["acl"] == "refused"
-        && report["genericIpc"] == "refused";
+        && report["genericIpc"] == "refused"
+        && report["events"] == "refused";
     eprintln!(
         "app isolation {} [{}]: {}",
         if ok { "ok" } else { "VIOLATION" },
@@ -1117,6 +1138,17 @@ async fn host_bridge_call(
     rpc::call_with_context(&state.apps, method, params["params"].clone(), context).await
 }
 
+/// Shell windows. Host events go to these by name rather than with `emit`, which
+/// would also reach app windows — and an app has no business reading the panel event
+/// stream (focus, touch, sensors) or writing events the shell acts on.
+const SHELL_WINDOWS: [&str; 3] = ["main", "dashboard", "taskbar"];
+
+fn emit_shell(app: &AppHandle, event: &str, payload: Value) {
+    for label in SHELL_WINDOWS {
+        let _ = app.emit_to(label, event, payload.clone());
+    }
+}
+
 fn agent_events(app: AppHandle, state: Arc<Host>) {
     tauri::async_runtime::spawn(async move {
         while !state.quitting.load(Ordering::Relaxed) {
@@ -1127,18 +1159,18 @@ fn agent_events(app: AppHandle, state: Arc<Host>) {
             };
             if let Ok(stream) = UnixStream::connect(socket).await {
                 state.connected.store(true, Ordering::Relaxed);
-                let _ = app.emit("agent-status", json!({"connected":true}));
+                emit_shell(&app, "agent-status", json!({"connected":true}));
                 let mut reader = BufReader::new(stream);
                 while let Ok(Some(line)) = rpc::line(&mut reader).await {
                     if let Ok(value) = serde_json::from_slice::<Value>(&line)
                         && value.get("event").is_some()
                     {
-                        let _ = app.emit("agent-event", value);
+                        emit_shell(&app, "agent-event", value);
                     }
                 }
             }
             state.connected.store(false, Ordering::Relaxed);
-            let _ = app.emit("agent-status", json!({"connected":false}));
+            emit_shell(&app, "agent-status", json!({"connected":false}));
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
@@ -1152,7 +1184,7 @@ fn watch_displays(app: AppHandle, state: Arc<Host>) {
             if current == previous {
                 continue;
             }
-            let _ = app.emit("displays-changed", json!({"edgePresent":current.is_some()}));
+            emit_shell(&app, "displays-changed", json!({"edgePresent":current.is_some()}));
             if current.is_none() {
                 let mut visible = Vec::new();
                 for label in ["main", "dashboard", "taskbar"] {
