@@ -94,7 +94,12 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
     dashboard's now-playing tile and notification badge survive each tick.
 - **B3** Make Tauri the default build / entry.
 - **B4** Remove the Electron \`ui/\` host + \`window-bridge.py\` + legacy runtime
-  split — only after the visible acceptance gate (C) passes.
+  split — only after the visible acceptance gate (C) passes. **Not a directory
+  deletion any more:** `ui/host/*`, `ui/host-bridge.js`, `ui/apps/registry.js` and
+  `ui/diagnostics.js` are load-bearing for the native host (the app-facing methods and
+  the registry live there), so B4 means removing the Electron scaffolding and moving
+  those four paths somewhere neutral. A cleanup commit that just deletes `ui/` would
+  halve a working host and no test would notice.
 - **C** Visible acceptance run on the real Edge (physical touch, app switching,
   tray, hotplug, Tablet Deck, dashboard tiles) — operator-hosted.
 - **D** Enable gestures behind the strict opt-in flag, validated on the real
