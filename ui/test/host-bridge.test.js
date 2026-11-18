@@ -26,11 +26,21 @@ const bridge = require('../host-bridge.js');
   const unknown = await bridge.dispatch({ id: 3, method: 'apps.teleport' });
   assert.match(unknown.error.message, /Unsupported host method: apps\.teleport/);
 
-  // apps.launch is deliberately absent: the native host has no app windows yet, so
-  // refusing is honest and this test is where that decision is visible.
+  // apps.launch belongs to the host (it creates a window), so this bridge must keep
+  // refusing it: a wrong route has to fail loudly instead of pretending the bridge
+  // could open an app.
   const launch = await bridge.dispatch({ id: 4, method: 'apps.launch', params: { id: 'ambient' } });
   assert.match(launch.error.message, /Unsupported host method: apps\.launch/,
-    'apps.launch stays unimplemented until the native host can open app windows');
+    'apps.launch is the host\'s job; the bridge must not silently answer it');
+
+  // The registry mapping the host authorizes against: a known method names its
+  // capability, an unknown one is an error rather than a default allow.
+  const required = await bridge.dispatch({ id: 7, method: 'apps.requiredCapability', params: { method: 'diagnostics.read' } });
+  assert.deepEqual(required.result, { method: 'diagnostics.read', capability: 'diagnostics:read', implemented: true });
+  const reserved = await bridge.dispatch({ id: 8, method: 'apps.requiredCapability', params: { method: 'display.ddcSet' } });
+  assert.equal(reserved.result.implemented, false, 'a reserved capability is reported as not implemented');
+  const bogus = await bridge.dispatch({ id: 9, method: 'apps.requiredCapability', params: { method: 'nope.nope' } });
+  assert.match(bogus.error.message, /unknown method: nope\.nope/);
 
   // diagnostics: the host's own facts are merged in, and the schema is the same
   // one the doctor app reads in the Electron host.

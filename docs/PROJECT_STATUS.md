@@ -153,6 +153,20 @@ Downstream Phase B–D from the plan, each gated by the cutover decision:
   agent process, no `edgeline.sock`, device card and DDC log populated from Rust,
   `ddcLog` events reaching the webview. Every renderer method the UI calls is served
   by the Rust backend (34 checked).
+- **App host in the native host: windows, bridge and placement work.** `--open-app
+  <id>` (or `EDGELINE_OPEN_APP`) opens an app the way the rail does, and the app
+  window is created by the host, gets exactly three injected functions
+  (`edgelineApp.call/info/close`, frozen, with the generic Tauri IPC object deleted
+  first), is authorized per call (registry says which capability a method needs, the
+  host decides whether the app has it, an unreachable bridge means denied), and is
+  placed by the backend's KWin script matching title+class and then upgrading to the
+  compositor UUID. Verified on the panel: Edge Doctor runs from `--open-app`, renders,
+  and reports `XENEON EDGE 2560×720 · app area 2464×720 · work-area offset 0` through
+  `diagnostics.read` in cutover mode with no agent. Known gaps: app windows are
+  `keepAbove` to be visible (the compositor ignored an activation request here), the
+  manifest `network[]` is **not** enforced — navigation is filtered, sub-resources are
+  not, so a user-installed app could still fetch — and the diagnostics compositor block
+  is empty because the window snapshot does not model `screens`.
 - **Host methods: six ported, one still missing because the host has no app
   windows.** The methods the bundled apps call are host responsibilities
   (`APP_METHODS` in `ui/main.js`), not backend ones. `ui/host-bridge.js` now serves

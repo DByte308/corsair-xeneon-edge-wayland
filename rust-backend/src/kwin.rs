@@ -18,6 +18,9 @@ const CONTROLLER: &str = include_str!("../../ui/kwin-launchpad.js");
 const OVERVIEW: &str = include_str!("../../ui/kwin-window-overview.js");
 const PLACEMENT: &str = include_str!("../../ui/kwin-place-panel.js");
 const ACTIVATION: &str = include_str!("../../ui/kwin-activate-window.js");
+/// Placement for one app window, identified by compositor id (see the file's
+/// header: id, not caption, and it waits for `windowAdded`).
+const APP_PLACEMENT: &str = include_str!("../../ui/kwin-place-app-native.js");
 
 struct Feed {
     snapshot: Arc<RwLock<Snapshot>>,
@@ -392,6 +395,33 @@ impl Kwin {
     pub async fn snapshot(&self) -> Result<Snapshot> {
         self.ensure_feed().await?;
         Ok(self.snapshot.read().await.clone())
+    }
+
+    /// Place an app window at `rect`, matched by its compositor id.
+    ///
+    /// Deployed as a one-shot: the script waits for the window (it may map after
+    /// this call), places it once, and the usual one-shot unload removes it. That
+    /// keeps identity, waiting and cleanup out of the host, which has no business
+    /// knowing about KWin script tags.
+    pub async fn place_app(&self, id: &str, title: &str, rect: &Value) -> Result<()> {
+        // An empty id is allowed: the window may not be in the feed yet (it can be on
+        // another output before placement), and then the script matches on the title.
+        let id = if id.is_empty() {
+            String::new()
+        } else {
+            canonical_uuid(id)?
+        };
+        let rect = json!({
+            "x": rect["x"].as_f64().unwrap_or(0.0),
+            "y": rect["y"].as_f64().unwrap_or(0.0),
+            "width": rect["width"].as_f64().unwrap_or(940.0),
+            "height": rect["height"].as_f64().unwrap_or(620.0),
+        });
+        let source = APP_PLACEMENT
+            .replace("__EDGELINE_WINDOW_ID__", &serde_json::to_string(&id)?)
+            .replace("__EDGELINE_WINDOW_TITLE__", &serde_json::to_string(title)?)
+            .replace("__EDGELINE_APP_RECT__", &rect.to_string());
+        self.one_shot(&source).await
     }
 
     pub async fn activate(&self, id: &str) -> Result<Value> {

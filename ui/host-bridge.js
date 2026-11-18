@@ -113,9 +113,42 @@ async function diagnosticsRead(context) {
   return diagnostics.collect(input);
 }
 
+/**
+ * What an app must be granted to call `method`, straight from the registry — the
+ * single source of truth for that mapping. The native host decides *whether* the
+ * app has it (the verdict belongs next to the window identity); this only says
+ * what to compare against.
+ */
+function requiredCapability(method) {
+  const capability = registry.METHODS[method];
+  if (typeof capability !== 'string') throw new Error(`unknown method: ${method}`);
+  // Ask the registry whether the capability alone would pass, which covers both
+  // "does any app implement this" and the implemented-method filter, instead of
+  // reaching into its internals.
+  const verdict = registry.authorize({ capabilities: [capability] }, method);
+  return { method, capability, implemented: verdict.ok === true };
+}
+
 // One entry per method the bundled apps call. Everything here is a host
 // responsibility: none of it belongs in the device backend.
 const METHODS = {
+  // Registry lookups the native host needs before it can create a window; this is
+  // discovery, not a security decision.
+  'apps.resolve': (args) => {
+    const resolved = registry.resolve(String((args && args.id) || ''));
+    if (!resolved.ok) throw new Error(resolved.error);
+    const app = resolved.app;
+    return {
+      id: app.id,
+      name: app.name,
+      entry: app.entry,
+      directory: app.directory,
+      capabilities: app.capabilities,
+      window: app.window,
+      apiVersion: app.apiVersion,
+    };
+  },
+  'apps.requiredCapability': (args) => requiredCapability(String((args && args.method) || '')),
   'apps.list': (args, context) => appList(context.openApps || args.openApps),
   'clipboard.read': () => clipboard.history(),
   'media.nowPlaying': () => media.nowPlaying(),
@@ -184,4 +217,6 @@ if (require.main === module) {
   serve(socketPath);
 }
 
-module.exports = { dispatch, appList, windowsList, diagnosticsRead, METHODS, serve };
+module.exports = {
+  dispatch, appList, windowsList, diagnosticsRead, requiredCapability, METHODS, serve,
+};

@@ -808,6 +808,19 @@ impl Backend {
                 Ok(snapshot)
             }
             "window.activate" => self.kwin.activate(parameter("id")?).await,
+            "app.place" => {
+                // The host asks for a rect; placement itself belongs here because
+                // the KWin script machinery (tags, stale cleanup, one-shot unload)
+                // lives in this process.
+                let id = request.params.get("id").and_then(Value::as_str).unwrap_or("");
+                let title = request.params.get("title").and_then(Value::as_str).unwrap_or("");
+                if id.is_empty() && title.is_empty() {
+                    bail!("app.place needs an id or a title");
+                }
+                let rect = request.params.get("rect").cloned().unwrap_or_else(|| json!({}));
+                self.kwin.place_app(id, title, &rect).await?;
+                Ok(json!({ "placed": true }))
+            }
             "gestures.config" => {
                 // Read-only gesture config snapshot. Gestures are disabled by
                 // default (flag-gated) and this never enables them; the

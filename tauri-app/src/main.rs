@@ -26,6 +26,10 @@ struct Host {
     /// `ui/host/*` modules, so the native host answers them exactly as the
     /// Electron host does instead of refusing them.
     apps: PathBuf,
+    /// Webview label -> app id. One map, two readers: `apps.list` reports `open`
+    /// from it and `app_call` takes the calling app's identity from it, so the
+    /// list and the authorization can never disagree.
+    app_windows: Mutex<std::collections::HashMap<String, String>>,
     config: PathBuf,
     prefs: Mutex<Value>,
     children: Mutex<Vec<Child>>,
@@ -57,6 +61,34 @@ struct Host {
 /// `apps.launch` is deliberately absent: the native host has no app windows yet
 /// (only the main, home, settings, dashboard and taskbar windows), so launching
 /// cannot work and pretending otherwise would be worse than refusing.
+/// Injected into every app window before its own scripts run.
+///
+/// Exactly three functions, frozen and non-configurable, and the generic Tauri IPC
+/// object is deleted afterwards: an app must not be able to reach the host's whole
+/// command surface, only the three calls that are authorized per app. The `invoke`
+/// handle is captured first — that is the only moment it is legitimately reachable.
+const APP_BRIDGE: &str = r#"
+(function () {
+    var internals = window.__TAURI_INTERNALS__;
+    var invoke = internals && internals.invoke ? internals.invoke.bind(internals) : null;
+    try { delete window.__TAURI_INTERNALS__; } catch (e) {}
+    try { delete window.__TAURI__; } catch (e) {}
+    function need() {
+        if (!invoke) throw new Error('host bridge unavailable');
+        return invoke;
+    }
+    function call(method, args) {
+        return need()('app_call', { method: String(method || ''), args: args && typeof args === 'object' ? args : {} });
+    }
+    function info() { return need()('app_info', {}); }
+    function close() { return need()('app_close', {}); }
+    Object.defineProperty(window, 'edgelineApp', {
+        value: Object.freeze({ call: call, info: info, close: close }),
+        writable: false, configurable: false, enumerable: true,
+    });
+})();
+"#;
+
 const APP_HOST_METHODS: [&str; 6] = [
     "apps.list",
     "clipboard.read",
@@ -68,6 +100,30 @@ const APP_HOST_METHODS: [&str; 6] = [
 
 fn is_app_host_method(method: &str) -> bool {
     APP_HOST_METHODS.contains(&method) || method == "diagnostics.read"
+}
+
+/// The app id a webview label belongs to, from the one map that also decides
+/// authorization. The label is set by this process, never by the page.
+fn app_for_label(state: &Host, label: &str) -> Option<String> {
+    state
+        .app_windows
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(label)
+        .cloned()
+}
+
+fn open_app_ids(state: &Host) -> Vec<String> {
+    let mut ids: Vec<String> = state
+        .app_windows
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .values()
+        .cloned()
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 /// Whether `rpc` goes to the Rust backend and the agent stays down.
@@ -160,6 +216,7 @@ impl Host {
             core: rpc::runtime()?.join("edgeline-rust/backend.sock"),
             agent: rpc::runtime()?.join("edgeline.sock"),
             apps: rpc::runtime()?.join("edgeline-host.sock"),
+            app_windows: Mutex::new(std::collections::HashMap::new()),
             config,
             prefs: Mutex::new(prefs),
             children: Mutex::new(Vec::new()),
@@ -444,6 +501,243 @@ async fn external(url: &str) -> Result<Value> {
     });
     Ok(json!(true))
 }
+/// Launch an app: resolve it, create its window with the injected bridge, then ask
+/// the compositor to place it.
+async fn launch_app(app: &AppHandle, state: &Arc<Host>, id: &str) -> Result<Value> {
+    // `rpc::call` returns the reply's `result` already, not the envelope.
+    let resolved = rpc::call(&state.apps, "apps.resolve", json!({ "id": id })).await?;
+    if resolved.is_null() {
+        bail!("unknown app: {id}");
+    }
+    let app_id = string(&resolved, "id")?.to_string();
+    let name = string(&resolved, "name")?.to_string();
+    let entry = string(&resolved, "entry")?.to_string();
+    let width = resolved["window"]["width"].as_f64().unwrap_or(1180.0);
+    let height = resolved["window"]["height"].as_f64().unwrap_or(680.0);
+    let resizable = resolved["window"]["resizable"].as_bool().unwrap_or(true);
+
+    let label = format!("app-{app_id}");
+    if let Some(existing) = app.get_webview_window(&label) {
+        // Reuse rather than duplicate; Wayland will not raise on focus alone.
+        existing.show()?;
+        let _ = existing.set_focus();
+        return Ok(json!({ "id": app_id, "opened": true, "reused": true }));
+    }
+
+    // Where the staged page lives, relative to web-dist: the resolver hands back an
+    // absolute path in the source tree, and only the part after `/apps/` is inside
+    // the bundle.
+    let relative = entry
+        .rfind("/apps/")
+        .map(|at| format!("apps/{}", &entry[at + "/apps/".len()..]))
+        .with_context(|| format!("app entry is not under an apps/ directory: {entry}"))?;
+
+    state
+        .app_windows
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(label.clone(), app_id.clone());
+
+    let window = match WebviewWindowBuilder::new(app, &label, WebviewUrl::App(relative.into()))
+        .title(&name)
+        .inner_size(width, height)
+        .resizable(resizable)
+        .decorations(false)
+        // Not skip-taskbar: the window feed drops those, and the feed is how the
+        // compositor id for placement is found. An app window is a real Edge window,
+        // which is also what the rail and the overview expect to show.
+        .skip_taskbar(false)
+        .always_on_top(false)
+        .initialization_script(APP_BRIDGE)
+        .data_directory(data_home()?.join("dev.edgeline.Ctl").join("apps").join(&app_id))
+        // Navigation only: the app's own page is what it may load. Sub-resources
+        // are not covered here — see PROJECT_STATUS on the network[] gap.
+        .on_navigation(|url| {
+            matches!(url.scheme(), "tauri" | "about")
+                || url.host_str() == Some("tauri.localhost")
+        })
+        .build()
+    {
+        Ok(window) => window,
+        Err(error) => {
+            state
+                .app_windows
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&label);
+            return Err(error).with_context(|| format!("cannot open a window for {app_id}"));
+        }
+    };
+    let _ = window.show();
+
+    // Placement is the compositor's job. Find the window by app id in the feed and
+    // hand its compositor id to the backend, which owns the KWin script machinery.
+    let app_handle = app.clone();
+    let state_for_place = state.clone();
+    let id_for_place = app_id.clone();
+    let name_for_place = name.clone();
+    tauri::async_runtime::spawn(async move {
+        // A new Wayland window lands on the active output, and the feed only reports
+        // Edge windows — so before placement there may be no compositor id to match.
+        // The script therefore matches on the title and a class that belongs to this
+        // host, which is what the Electron host does too. The lookup below upgrades
+        // that to the id once the window is in the feed, which is stricter and keeps
+        // working if an app renames its own caption later.
+        let rect = edge_rect(&app_handle).unwrap_or_else(|| json!({}));
+        let _ = rpc::call(
+            &state_for_place.core,
+            "app.place",
+            json!({ "title": name_for_place, "rect": rect }),
+        )
+        .await;
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(150));
+            let Ok(snapshot) = rpc::call(&state_for_place.core, "window.snapshot", json!({})).await
+            else {
+                continue;
+            };
+            let windows = snapshot["windows"].as_array().cloned().unwrap_or_default();
+            if let Some(compositor_id) = windows
+                .iter()
+                .find(|w| w["title"].as_str() == Some(name_for_place.as_str()))
+                .and_then(|w| w["id"].as_str())
+            {
+                let _ = rpc::call(
+                    &state_for_place.core,
+                    "app.place",
+                    json!({ "id": compositor_id, "rect": rect }),
+                )
+                .await;
+                return;
+            }
+        }
+        eprintln!("app {id_for_place}: not in the window feed after 6 s (placed by title)");
+    });
+
+    Ok(json!({ "id": app_id, "opened": true, "reused": false }))
+}
+
+/// The rect an app may use: the Edge output minus the 96-pixel rail.
+fn edge_rect(app: &AppHandle) -> Option<Value> {
+    let monitor = edge(app).ok().flatten()?;
+    let x = monitor["bounds"]["x"].as_f64().unwrap_or(0.0);
+    let y = monitor["bounds"]["y"].as_f64().unwrap_or(0.0);
+    let width = monitor["bounds"]["width"].as_f64().unwrap_or(2560.0);
+    let height = monitor["bounds"]["height"].as_f64().unwrap_or(720.0);
+    Some(json!({ "x": x + 96.0, "y": y, "width": (width - 96.0).max(96.0), "height": height }))
+}
+
+fn data_home() -> Result<PathBuf> {
+    Ok(std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or(home()?.join(".local/share")))
+}
+
+/// Authorize one app call: the registry supplies which capability a method needs,
+/// this process decides whether the app has it, and a bridge that cannot answer
+/// means "denied" rather than "allowed".
+async fn authorize_app_call(state: &Host, app_id: &str, method: &str) -> Result<()> {
+    let resolved = rpc::call(&state.apps, "apps.resolve", json!({ "id": app_id })).await?;
+    if resolved.is_null() {
+        bail!("Not an app window");
+    }
+    let required = rpc::call(
+        &state.apps,
+        "apps.requiredCapability",
+        json!({ "method": method }),
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("host bridge unavailable, denying: {error}"))?;
+    if required.is_null() {
+        bail!("unknown method: {method}");
+    }
+    if required["implemented"].as_bool() != Some(true) {
+        bail!("{method} is not implemented in this build");
+    }
+    let capability = string(&required, "capability")?;
+    let granted = resolved["capabilities"]
+        .as_array()
+        .map(|caps| caps.iter().any(|c| c.as_str() == Some(capability)))
+        .unwrap_or(false);
+    if !granted {
+        bail!("{app_id} is not granted {capability}");
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn app_call(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: tauri::State<'_, Arc<Host>>,
+    method: String,
+    args: Value,
+) -> std::result::Result<Value, String> {
+    app_call_inner(&app, &window, state.inner(), &method, args)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn app_call_inner(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    state: &Arc<Host>,
+    method: &str,
+    args: Value,
+) -> Result<Value> {
+    let app_id = app_for_label(state, window.label())
+        .ok_or_else(|| anyhow::anyhow!("Not an app window"))?;
+    authorize_app_call(state, &app_id, method).await?;
+    // The bridge reaches the same host methods the panel uses; the device calls come
+    // from the backend.
+    if is_app_host_method(method) || method == "media.command" {
+        return host_bridge_call(app, state, method, &json!({ "params": args })).await;
+    }
+    let socket = if state.core_only { &state.core } else { &state.agent };
+    rpc::call(socket, method, args).await
+}
+
+#[tauri::command]
+async fn app_info(
+    window: WebviewWindow,
+    state: tauri::State<'_, Arc<Host>>,
+) -> std::result::Result<Value, String> {
+    app_info_inner(&window, state.inner())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn app_info_inner(
+    window: &WebviewWindow,
+    state: &Arc<Host>,
+) -> Result<Value> {
+    let app_id = app_for_label(state, window.label())
+        .ok_or_else(|| anyhow::anyhow!("Not an app window"))?;
+    let resolved = rpc::call(&state.apps, "apps.resolve", json!({ "id": app_id })).await?;
+    Ok(json!({
+        "id": resolved["id"],
+        "name": resolved["name"],
+        "capabilities": resolved["capabilities"],
+    }))
+}
+
+#[tauri::command]
+async fn app_close(
+    window: WebviewWindow,
+    state: tauri::State<'_, Arc<Host>>,
+) -> std::result::Result<Value, String> {
+    let label = window.label().to_string();
+    let known = app_for_label(state.inner(), &label).is_some();
+    let state = state.inner();
+    state
+        .app_windows
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&label);
+    let _ = window.destroy();
+    Ok(json!({ "closed": known }))
+}
+
 #[tauri::command]
 async fn edgeline(
     app: AppHandle,
@@ -452,14 +746,14 @@ async fn edgeline(
     method: String,
     params: Value,
 ) -> std::result::Result<Value, String> {
-    dispatch(&app, &window, &state, &method, params)
+    dispatch(&app, &window, state.inner(), &method, params)
         .await
         .map_err(|e| e.to_string())
 }
 async fn dispatch(
     app: &AppHandle,
     window: &WebviewWindow,
-    state: &Host,
+    state: &Arc<Host>,
     method: &str,
     params: Value,
 ) -> Result<Value> {
@@ -505,11 +799,14 @@ async fn dispatch(
             {
                 bail!("Mutation RPC disabled during smoke testing");
             }
+            if name == "apps.launch" {
+                return launch_app(&app, state, string(&params, "id").unwrap_or_default()).await;
+            }
             if is_app_host_method(name) {
                 // Host responsibilities, answered by the bridge in both modes so
                 // the bundled apps behave the same whichever backend serves the
                 // panel.
-                return host_bridge_call(&app, &state, name, &params).await;
+                return host_bridge_call(&app, state, name, &params).await;
             }
             // The cutover switch: the data plane is the Rust backend when asked for
             // it, otherwise the agent that still owns it today.
@@ -646,14 +943,52 @@ async fn dispatch(
 /// diagnostics schema expects. Assembled here rather than in the bridge, so the
 /// bridge stays a thin adapter over the tested `ui/host/*` modules.
 fn host_bridge_context(app: &AppHandle, state: &Host) -> Value {
-    let open_apps: Vec<String> = Vec::new();
-    let edge = edge(app).ok().flatten();
+    // The same map that authorizes `app_call`, so "listed as open" and "is an app
+    // window" cannot disagree.
+    let open_apps: Vec<String> = open_app_ids(state);
     let version = app.package_info().version.to_string();
+    // The diagnostics schema wants the host's display list; without it the doctor
+    // app reports "Edge display — not found" on a machine that has one.
+    let displays: Vec<Value> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|monitor| {
+            let size = monitor.size();
+            let position = monitor.position();
+            let name = monitor.name().cloned().unwrap_or_default();
+            let is_edge = monitor.size().width == 2560
+                && monitor.size().height == 720
+                && (monitor.scale_factor() - 1.).abs() < 0.01;
+            json!({
+                "id": name,
+                "label": name,
+                "edge": is_edge,
+                "size": { "width": size.width, "height": size.height },
+                "bounds": {
+                    "x": position.x, "y": position.y,
+                    "width": size.width, "height": size.height,
+                },
+                "workArea": {
+                    "x": position.x, "y": position.y,
+                    "width": size.width, "height": size.height,
+                },
+                "scaleFactor": monitor.scale_factor(),
+                "internal": false,
+            })
+        })
+        .collect();
     json!({
         "openApps": open_apps,
         "diagnostics": {
             "railWidth": 96,
-            "edgeId": edge.as_ref().and_then(|e| e["id"].as_str()).map(str::to_string),
+            "displays": displays,
+            // The doctor matches a display by id; the Edge is the one marked above.
+            "edgeId": displays
+                .iter()
+                .find(|d| d["edge"].as_bool() == Some(true))
+                .and_then(|d| d["id"].as_str())
+                .map(str::to_string),
             "host": {
                 "runtime": "Tauri",
                 "version": version,
@@ -810,11 +1145,23 @@ fn main() {
         }
         Some(file)
     };
+    // Same flag the Electron host accepts, so a run can open one app without a
+    // pointer (and the acceptance run does not depend on clicking the rail).
+    let open_app = std::env::args()
+        .position(|arg| arg == "--open-app")
+        .and_then(|at| std::env::args().nth(at + 1))
+        .or_else(|| std::env::var("EDGELINE_OPEN_APP").ok())
+        .filter(|id| !id.is_empty());
     let state = Arc::new(Host::new(smoke).expect("Initialize Rust host"));
     let setup_state = state.clone();
     let app = tauri::Builder::default()
         .manage(state.clone())
-        .invoke_handler(tauri::generate_handler![edgeline])
+        .invoke_handler(tauri::generate_handler![
+            edgeline,
+            app_call,
+            app_info,
+            app_close
+        ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<Arc<Host>>();
@@ -841,6 +1188,19 @@ fn main() {
                 eprintln!("host bridge unavailable: {error}");
             }
             agent_events(handle.clone(), setup_state.clone());
+            if let Some(id) = open_app.clone() {
+                let app_for_open = handle.clone();
+                let state_for_open = setup_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    // Give the panel a moment to appear before an app window is placed
+                    // next to it.
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    match launch_app(&app_for_open, &state_for_open, &id).await {
+                        Ok(result) => eprintln!("opened app: {result}"),
+                        Err(error) => eprintln!("cannot open app {id}: {error}"),
+                    }
+                });
+            }
             if smoke {
                 create_window(
                     &handle,
