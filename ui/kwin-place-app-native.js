@@ -67,11 +67,27 @@
         workspace.windowList().forEach(apply);
     }
 
+    // A new toplevel can be added before its caption or class is set, and `matches()`
+    // needs the caption. Without the caption listener such a window would be looked at
+    // exactly once and never again, and it would stay on whatever output it mapped on.
+    var captionHandlers = [];
+
+    function watch(w) {
+        apply(w);
+        if (placed || !w || !w.captionChanged) return;
+        var handler = w.captionChanged.connect(function () {
+            apply(w);
+            if (placed) w.captionChanged.disconnect(handler);
+        });
+        captionHandlers.push(handler);
+    }
+
     scan();
     if (!placed) {
-        var handler = workspace.windowAdded.connect(function (w) {
-            apply(w);
-            if (placed) workspace.windowAdded.disconnect(handler);
+        workspace.windowList().forEach(watch);
+        var added = workspace.windowAdded.connect(function (w) {
+            watch(w);
+            if (placed) workspace.windowAdded.disconnect(added);
         });
     }
 })();

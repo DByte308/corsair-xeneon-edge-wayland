@@ -71,8 +71,35 @@ const APP_BRIDGE: &str = r#"
 (function () {
     var internals = window.__TAURI_INTERNALS__;
     var invoke = internals && internals.invoke ? internals.invoke.bind(internals) : null;
-    try { delete window.__TAURI_INTERNALS__; } catch (e) {}
-    try { delete window.__TAURI__; } catch (e) {}
+    // `delete` on a non-configurable property fails silently in sloppy mode, so it is
+    // not enough on its own: try the delete, and if the object is still reachable,
+    // overwrite the reference as well. Then report what actually happened — "we tried
+    // to remove it" and "it is gone" are different promises.
+    function strip(name) {
+        try { delete window[name]; } catch (e) {}
+        try {
+            if (typeof window[name] !== 'undefined') {
+                Object.defineProperty(window, name, {
+                    value: undefined, writable: false, configurable: false,
+                });
+            }
+        } catch (e) {}
+    }
+    // Tauri defines these non-configurable, so neither `delete` nor `defineProperty`
+    // can remove them (measured: `typeof window.__TAURI_INTERNALS__` stays "object").
+    // What can be taken away is the capability: replace the IPC entry point with a
+    // stub that refuses, while our captured reference keeps working.
+    strip('__TAURI_INTERNALS__');
+    strip('__TAURI__');
+    // Best effort on top: if the entry point happens to be writable, blunt it.
+    var stub = 'not-writable';
+    try {
+        Object.defineProperty(internals || {}, 'invoke', {
+            value: function () { throw new Error('generic IPC is disabled in app windows'); },
+            writable: false, configurable: false,
+        });
+        stub = 'stubbed';
+    } catch (e) { stub = 'not-writable'; }
     function need() {
         if (!invoke) throw new Error('host bridge unavailable');
         return invoke;
@@ -86,6 +113,55 @@ const APP_BRIDGE: &str = r#"
         value: Object.freeze({ call: call, info: info, close: close }),
         writable: false, configurable: false, enumerable: true,
     });
+
+    // The isolation claim, measured from inside the app window instead of asserted in
+    // a commit message. `acl` is the second barrier: the generic command must be
+    // refused for an app window even if the internals object were still reachable.
+    function probe(callIt) {
+        var result;
+        try {
+            result = callIt();
+        } catch (e) {
+            return Promise.resolve('blocked');
+        }
+        return Promise.resolve(result).then(
+            function () { return 'REACHABLE'; },
+            function (error) {
+                var text = String((error && error.message) || error);
+                return /not allowed|denied|ACL/i.test(text) ? 'refused' : 'error: ' + text;
+            }
+        );
+    }
+
+    // The isolation claim, measured from inside the app window. Two barriers are
+    // checked separately: the ACL must refuse a forbidden command through our own
+    // captured invoke, and also through the page-facing object if it is still there
+    // (Tauri defines it non-configurable, so `delete`/`defineProperty` cannot remove
+    // it — what matters is that it cannot be used).
+    function report() {
+        var descriptor = Object.getOwnPropertyDescriptor(window, 'edgelineApp') || {};
+        var payload = {
+            tauriGlobal: typeof window.__TAURI__,
+            internals: typeof window.__TAURI_INTERNALS__,
+            bridgeFrozen: Object.isFrozen(window.edgelineApp),
+            bridgeLocked: descriptor.configurable === false,
+            stub: stub,
+            acl: 'unknown',
+            genericIpc: 'unknown',
+        };
+        return probe(function () { return invoke('edgeline', { method: 'backend.info' }); })
+            .then(function (verdict) {
+                payload.acl = verdict;
+                return probe(function () {
+                    return window.__TAURI_INTERNALS__.invoke('edgeline', { method: 'backend.info' });
+                });
+            })
+            .then(function (verdict) {
+                payload.genericIpc = verdict;
+                return invoke('app_isolation', { report: payload });
+            });
+    }
+    report().catch(function () {});
 })();
 "#;
 
@@ -697,6 +773,34 @@ async fn app_call_inner(
     rpc::call(socket, method, args).await
 }
 
+/// Receives the app window's own isolation report and puts it in the host log, so the
+/// acceptance run has a line to grep instead of a claim to believe.
+#[tauri::command]
+async fn app_isolation(
+    window: WebviewWindow,
+    state: tauri::State<'_, Arc<Host>>,
+    report: Value,
+) -> std::result::Result<Value, String> {
+    let known = app_for_label(state.inner(), window.label()).is_some();
+    if !known {
+        return Err("Not an app window".to_string());
+    }
+    // `internals` is expected to stay "object" (non-configurable); what must hold is
+    // that its IPC entry point is blocked and the ACL refuses the generic command.
+    let ok = report["tauriGlobal"] == "undefined"
+        && report["bridgeFrozen"] == true
+        && report["bridgeLocked"] == true
+        && report["acl"] == "refused"
+        && report["genericIpc"] == "refused";
+    eprintln!(
+        "app isolation {} [{}]: {}",
+        if ok { "ok" } else { "VIOLATION" },
+        window.label(),
+        report
+    );
+    Ok(json!({ "ok": ok }))
+}
+
 #[tauri::command]
 async fn app_info(
     window: WebviewWindow,
@@ -1160,7 +1264,8 @@ fn main() {
             edgeline,
             app_call,
             app_info,
-            app_close
+            app_close,
+            app_isolation
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

@@ -67,7 +67,7 @@ fn main() {
     println!("cargo:rerun-if-changed=smoke-test.js");
     tauri_build::try_build(
         tauri_build::Attributes::new()
-            .app_manifest(tauri_build::AppManifest::new().commands(&["edgeline", "app_call", "app_info", "app_close"])),
+            .app_manifest(tauri_build::AppManifest::new().commands(&["edgeline", "app_call", "app_info", "app_close", "app_isolation"])),
     )
     .expect("build local-only Tauri command permissions");
 }

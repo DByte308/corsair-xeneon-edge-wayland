@@ -4,5 +4,5 @@
   "description": "Bundled and user apps may call exactly three host commands. No generic IPC, no device commands: everything else they need is reached through app_call, which authorizes per app.",
   "local": true,
   "windows": ["app-*"],
-  "permissions": ["core:default", "allow-app-call", "allow-app-info", "allow-app-close"]
+  "permissions": ["core:default", "allow-app-call", "allow-app-info", "allow-app-close", "allow-app-isolation"]
 }
